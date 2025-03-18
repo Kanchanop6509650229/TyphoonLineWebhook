@@ -1,0 +1,45 @@
+version: '3'
+services:
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+    restart: always
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MYSQL_HOST=db
+      - MYSQL_PORT=3306
+      - TZ=Asia/Bangkok
+      - TOGETHER_MODEL=${TOGETHER_MODEL:-scb10x/scb10x-llama3-1-typhoon2-60256}
+    env_file: .env
+    depends_on:
+      - redis
+      - db
+    volumes:
+      - ./logs:/app/logs
+
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  db:
+    image: mysql:8.0
+    command: --default-authentication-plugin=mysql_native_password
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-your_root_password}
+      MYSQL_DATABASE: ${MYSQL_DB:-chatbot}
+      MYSQL_USER: ${MYSQL_USER:-chatbot}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-your_password}
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+
+volumes:
+  redis_data:
+  db_data:
