@@ -135,17 +135,22 @@ SYSTEM_MESSAGES = {
 
 # คอนฟิกการสร้างข้อความ
 GENERATION_CONFIG = {
-    "temperature": 1.0,
+    "temperature": 0.8,
     "max_tokens": 3000,
-    "top_p": 0.9
+    "top_p": 0.9,
+    "top_k": 40,
+    "repetition_penalty": 1
 }
 
 # คอนฟิกการสร้างข้อความสรุป
 SUMMARY_GENERATION_CONFIG = {
     "temperature": 0.3,
-    "max_tokens": 5000
+    "max_tokens": 5000,
+    "top_p": 0.5, 
+    "top_k": 30,
+    "repetition_penalty": 1.2, 
 }
 
 # ค่า token threshold สำหรับจัดการประวัติการสนทนา
-# ตั้งไว้ที่ 80,000 ใช้ประโยชน์จาก context window 90k โดยเผื่อพื้นที่สำหรับข้อความใหม่
-TOKEN_THRESHOLD = 80000
+# ตั้งไว้ที่ 55,000 ใช้ประโยชน์จาก context window 60k โดยเผื่อพื้นที่สำหรับข้อความใหม่
+TOKEN_THRESHOLD = 55000
