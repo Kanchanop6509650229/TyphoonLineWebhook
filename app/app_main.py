@@ -712,18 +712,97 @@ def unlock_user(user_id):
     redis_client.delete(f"message_lock:{user_id}")
 
 # ฟังก์ชันเกี่ยวกับการติดตามผู้ใช้
-def schedule_follow_up(user_id, interaction_date):
-    """จัดการการติดตามผู้ใช้"""
+def schedule_follow_up(user_id, interaction_date=None):
+    """
+    จัดการการติดตามผู้ใช้ โดยอ้างอิงจากข้อความแรกสุด
+    ไม่รีเซ็ตเวลาหลังจากส่งข้อความใหม่
+    
+    Args:
+        user_id (str): LINE User ID
+        interaction_date (datetime, optional): วันที่ปฏิสัมพันธ์ (ถ้าไม่ระบุจะหาจากฐานข้อมูล)
+    """
     try:
+        # ตรวจสอบว่ามีการกำหนดการติดตามไว้แล้วหรือไม่
+        exists_in_queue = redis_client.zscore('follow_up_queue', user_id)
+        
+        # ถ้าผู้ใช้มีอยู่ในคิวอยู่แล้ว ไม่ต้องกำหนดซ้ำ
+        if exists_in_queue:
+            logging.debug(f"ผู้ใช้ {user_id} มีการติดตามกำหนดไว้แล้ว ไม่มีการเปลี่ยนแปลง")
+            return
+            
+        # หาวันที่ของข้อความแรกสุด
+        if interaction_date is None:
+            # ตรวจสอบว่ามีการเก็บเวลาเริ่มต้นไว้ใน Redis หรือไม่
+            first_interaction_time = redis_client.get(f"first_interaction:{user_id}")
+            
+            if first_interaction_time:
+                try:
+                    # แปลงจาก string หรือ bytes เป็น float และจาก float เป็น datetime
+                    if isinstance(first_interaction_time, bytes):
+                        first_interaction_time = first_interaction_time.decode('utf-8')
+                    interaction_date = datetime.fromtimestamp(float(first_interaction_time))
+                except (ValueError, TypeError) as e:
+                    logging.warning(f"ข้อมูลเวลาเริ่มต้นใน Redis ไม่ถูกต้อง: {str(e)}")
+                    interaction_date = None
+            
+            # ถ้ายังไม่มีเวลาเริ่มต้นที่ถูกต้อง ให้ดึงจากฐานข้อมูล
+            if interaction_date is None:
+                conn = mysql_pool.get_connection()
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        'SELECT MIN(timestamp) FROM conversations WHERE user_id = %s',
+                        (user_id,)
+                    )
+                    result = cursor.fetchone()
+                    first_timestamp = result[0] if result else None
+                    
+                    if first_timestamp:
+                        interaction_date = first_timestamp
+                        # เก็บเวลาเริ่มต้นลง Redis เพื่อใช้อ้างอิงในอนาคต
+                        redis_client.set(
+                            f"first_interaction:{user_id}",
+                            interaction_date.timestamp()
+                        )
+                    else:
+                        # ถ้าไม่มีข้อมูลในฐานข้อมูล ใช้เวลาปัจจุบัน
+                        interaction_date = datetime.now()
+                        # เก็บเวลาเริ่มต้นลง Redis
+                        redis_client.set(
+                            f"first_interaction:{user_id}",
+                            interaction_date.timestamp()
+                        )
+                except Exception as db_error:
+                    logging.error(f"เกิดข้อผิดพลาดในการดึงข้อมูลจากฐานข้อมูล: {str(db_error)}")
+                    interaction_date = datetime.now()
+                finally:
+                    cursor.close()
+                    conn.close()
+        
+        # ตรวจสอบว่า interaction_date เป็นประเภท datetime
+        if not isinstance(interaction_date, datetime):
+            logging.warning(f"ค่า interaction_date ไม่ใช่ประเภท datetime ใช้เวลาปัจจุบันแทน")
+            interaction_date = datetime.now()
+                
+        # กำหนดการติดตามตามช่วงเวลาที่กำหนด
         current_date = datetime.now()
+        scheduled = False
+        
         for days in FOLLOW_UP_INTERVALS:
             follow_up_date = interaction_date + timedelta(days=days)
+            # กำหนดการติดตามสำหรับวันที่ในอนาคตเท่านั้น
             if follow_up_date > current_date:
                 redis_client.zadd(
                     'follow_up_queue',
                     {user_id: follow_up_date.timestamp()}
                 )
+                logging.info(f"กำหนดการติดตามผู้ใช้ {user_id} ในวันที่ {follow_up_date.strftime('%Y-%m-%d')} (+{days} วัน)")
+                scheduled = True
                 break
+        
+        if not scheduled:
+            logging.info(f"ไม่ได้กำหนดการติดตามสำหรับผู้ใช้ {user_id} เนื่องจากไม่มีวันที่ในอนาคตที่เข้าเกณฑ์")
+            
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการกำหนดการติดตามผล: {str(e)}")
 
