@@ -25,7 +25,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # นำเข้าโมดูลภายในโปรเจค
 from .middleware.rate_limiter import init_limiter
 from .config import load_config, SYSTEM_MESSAGES, GENERATION_CONFIG, SUMMARY_GENERATION_CONFIG, TOKEN_THRESHOLD
-from .utils import safe_db_operation, safe_api_call
+from .utils import safe_db_operation, safe_api_call, clean_ai_response, handle_together_api_error
 from .chat_history_db import ChatHistoryDB
 from .token_counter import TokenCounter
 from .async_api import AsyncTogetherClient
@@ -1043,9 +1043,30 @@ def process_ai_response(user_id, user_message, start_time, animation_success):
         # เพิ่มข้อความของผู้ใช้
         messages.append({"role": "user", "content": user_message})
         
-        # รับการตอบกลับจาก Together
-        response = generate_ai_response(messages)
-        bot_response = response.choices[0].message.content
+        # รับการตอบกลับจาก Together พร้อมการจัดการข้อผิดพลาด
+        try:
+            response = generate_ai_response(messages)
+            
+            # ตรวจสอบการตอบกลับ
+            if not response or not hasattr(response, 'choices') or not response.choices:
+                raise ValueError("ได้รับการตอบกลับที่ไม่ถูกต้องจาก AI API")
+            
+            # ดึงและทำความสะอาดข้อความตอบกลับ
+            original_bot_response = response.choices[0].message.content
+            
+            # ขั้นตอนการทำความสะอาด response
+            bot_response = clean_ai_response(original_bot_response)
+            
+            # บันทึก log หากมีการทำความสะอาด
+            if original_bot_response != bot_response:
+                logging.info(f"ทำความสะอาด response จาก Together AI สำหรับผู้ใช้: {user_id}")
+                
+        except Exception as api_error:
+            # จัดการกับข้อผิดพลาดการเรียก API
+            logging.error(f"เกิดข้อผิดพลาดในการเรียก Together API: {str(api_error)}")
+            bot_response = handle_together_api_error(api_error, user_id, user_message)
+        
+        # เพิ่มข้อความตอบกลับลงในประวัติการสนทนา
         messages.append({"role": "assistant", "content": bot_response})
 
         # ประมวลผลข้อมูลการตอบกลับ
@@ -1063,7 +1084,9 @@ def process_ai_response(user_id, user_message, start_time, animation_success):
         
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการประมวลผล AI: {str(e)}", exc_info=True)
-        send_final_response(user_id, "ขออภัยค่ะ เกิดข้อผิดพลาดในการประมวลผล")
+        error_message = "ขออภัยค่ะ เกิดข้อผิดพลาดในการประมวลผล กรุณาลองใหม่อีกครั้ง"
+        send_final_response(user_id, error_message)
+
 
 def prepare_conversation_context(messages, optimized_history):
     """เตรียมบริบทการสนทนาโดยใช้ประวัติ"""
@@ -1238,11 +1261,23 @@ def handle_response_timing(start_time, animation_success):
 @safe_api_call
 def generate_ai_response(messages):
     """สร้างการตอบกลับด้วย AI โดยมีการจัดการข้อผิดพลาด"""
-    return together_client.chat.completions.create(
-        model=config.TOGETHER_MODEL,
-        messages=[SYSTEM_MESSAGES] + messages,
-        **GENERATION_CONFIG
-    )
+    try:
+        response = together_client.chat.completions.create(
+            model=config.TOGETHER_MODEL,
+            messages=[SYSTEM_MESSAGES] + messages,
+            **GENERATION_CONFIG
+        )
+        
+        # ตรวจสอบการตอบกลับเบื้องต้น
+        if not response or not hasattr(response, 'choices') or not response.choices:
+            logging.error("ได้รับการตอบกลับที่ไม่ถูกต้องจาก Together API")
+            raise ValueError("Invalid response from Together API")
+            
+        return response
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการสร้างการตอบกลับ AI: {str(e)}")
+        raise
 
 # เส้นทาง Flask
 @app.route("/callback", methods=['POST'])

@@ -3,9 +3,11 @@
 รวมฟังก์ชันช่วยเหลือและเดโครเรเตอร์ต่างๆ
 """
 import functools
+import re
 import logging
 import traceback
 import time
+import requests
 from typing import Callable, Any, TypeVar, cast, Dict
 
 # ตัวแปรประเภทสำหรับฟังก์ชัน
@@ -41,7 +43,7 @@ def safe_db_operation(func: F) -> F:
 
 def safe_api_call(func: F) -> F:
     """
-    เดโครเรเตอร์สำหรับการเรียก API แบบปลอดภัยพร้อมลอจิกการลองใหม่
+    เดโครเรเตอร์สำหรับการเรียก API แบบปลอดภัยพร้อมลอจิกการลองใหม่ที่ปรับปรุงแล้ว
     
     Args:
         func: ฟังก์ชันเรียก API ที่ต้องการห่อหุ้ม
@@ -51,29 +53,126 @@ def safe_api_call(func: F) -> F:
     """
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        max_retries = 3
+        max_retries = kwargs.pop('max_retries', 3)
         retry_count = 0
         last_error = None
         
+        # บันทึก log เริ่มต้นการเรียก API
+        func_name = func.__name__
+        logging.debug(f"เริ่มเรียก API: {func_name}")
+        
         while retry_count < max_retries:
             try:
-                return func(*args, **kwargs)
-            except Exception as e:
+                start_time = time.time()
+                response = func(*args, **kwargs)
+                execution_time = time.time() - start_time
+                
+                # บันทึก log เวลาการทำงาน
+                logging.debug(f"API {func_name} ทำงานเสร็จใน {execution_time:.2f} วินาที")
+                
+                # ตรวจสอบความถูกต้องของ response
+                if response is None:
+                    raise ValueError(f"API {func_name} ส่งคืนค่า None")
+                
+                return response
+                
+            except (requests.exceptions.Timeout, 
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.HTTPError) as e:
+                # ข้อผิดพลาดเครือข่าย ลองใหม่ได้
                 last_error = e
                 retry_count += 1
                 wait_time = 2 ** retry_count  # Exponential backoff
-                logging.warning(f"การเรียก API ล้มเหลว (ความพยายามที่ {retry_count}/{max_retries}): {str(e)}")
                 
-                if retry_count >= max_retries:
-                    logging.error(f"การเรียก API ล้มเหลวทั้งหมด: {str(e)}")
-                    # คืนค่า None หรือคืนค่าข้อผิดพลาด ขึ้นอยู่กับความต้องการ
-                    if kwargs.get('raise_error', False):
-                        raise last_error
-                    return None
+                logging.warning(
+                    f"เกิดข้อผิดพลาดเครือข่ายใน {func_name} "
+                    f"(ความพยายามที่ {retry_count}/{max_retries}): {str(e)}"
+                )
+                
+                if retry_count < max_retries:
+                    logging.info(f"รอ {wait_time} วินาทีก่อนลองอีกครั้ง...")
+                    time.sleep(wait_time)
+                
+            except Exception as e:
+                # ข้อผิดพลาดอื่นๆ ที่ไม่ใช่เครือข่าย
+                error_msg = str(e)
+                logging.error(f"ข้อผิดพลาดใน {func_name}: {error_msg}")
+                
+                # ตรวจสอบข้อผิดพลาดเฉพาะของ Together API
+                if "rate limit" in error_msg.lower():
+                    last_error = e
+                    retry_count += 1
+                    wait_time = 5 * retry_count  # Rate limit ต้องรอนานกว่า
                     
-                # รอก่อนที่จะลองใหม่
-                time.sleep(wait_time)
+                    if retry_count < max_retries:
+                        logging.warning(f"พบข้อจำกัดอัตรา API รอ {wait_time} วินาทีก่อนลองใหม่...")
+                        time.sleep(wait_time)
+                    continue
+                
+                # ข้อผิดพลาดอื่นๆ ที่ไม่ใช่ rate limit ไม่ต้องลองใหม่
+                if kwargs.get('raise_error', False):
+                    raise
+                
+                # ส่งคืนผลลัพธ์เริ่มต้นที่เหมาะสม
+                return kwargs.get('default_value', None)
+        
+        # หลังจากลองครบตามจำนวนครั้งแล้วยังไม่สำเร็จ
+        if retry_count >= max_retries:
+            logging.error(f"การเรียก {func_name} ล้มเหลวหลังจากลอง {max_retries} ครั้ง")
+            
+            if kwargs.get('raise_error', False):
+                raise last_error or ValueError(f"Failed after {max_retries} retries")
+                
+            # ส่งคืนผลลัพธ์เริ่มต้นที่เหมาะสม
+            return kwargs.get('default_value', None)
+            
     return cast(F, wrapper)
+
+def handle_together_api_error(e, user_id, user_message):
+    """
+    จัดการกับข้อผิดพลาดเฉพาะของ Together API และส่งข้อความที่เหมาะสมไปยังผู้ใช้
+    
+    Args:
+        e (Exception): ข้อผิดพลาดที่เกิดขึ้น
+        user_id (str): LINE user ID
+        user_message (str): ข้อความของผู้ใช้
+        
+    Returns:
+        str: ข้อความแจ้งข้อผิดพลาดที่ควรส่งให้ผู้ใช้
+    """
+    error_str = str(e).lower()
+    
+    # ข้อผิดพลาดเกี่ยวกับการเกินขีดจำกัดอัตรา (rate limit)
+    if "rate limit" in error_str or "too many requests" in error_str:
+        logging.warning(f"ผู้ใช้ {user_id} พบข้อจำกัดอัตรา API")
+        return (
+            "ขออภัยค่ะ ระบบกำลังมีการใช้งานสูง กรุณารอสักครู่และลองอีกครั้ง\n"
+            "น้องใจดีจะรีบกลับมาช่วยเหลือคุณโดยเร็วที่สุด"
+        )
+    
+    # ข้อผิดพลาดเกี่ยวกับการเชื่อมต่อ
+    elif any(keyword in error_str for keyword in ["timeout", "connection", "network", "socket"]):
+        logging.error(f"เกิดปัญหาการเชื่อมต่อสำหรับผู้ใช้ {user_id}: {error_str}")
+        return (
+            "ขออภัยค่ะ เกิดปัญหาในการเชื่อมต่อกับระบบ\n"
+            "กรุณาลองอีกครั้งในอีกสักครู่ หากยังมีปัญหา โปรดติดต่อผู้ดูแลระบบ"
+        )
+    
+    # ข้อผิดพลาดเกี่ยวกับเนื้อหาที่ถูกกรอง (content filtering)
+    elif any(keyword in error_str for keyword in ["content filter", "filtered", "moderation"]):
+        logging.warning(f"เนื้อหาไม่เหมาะสมจากผู้ใช้ {user_id}: {user_message[:100]}...")
+        return (
+            "ขออภัยค่ะ ระบบไม่สามารถตอบคำถามนี้ได้เนื่องจากนโยบายการใช้งาน\n"
+            "กรุณาสอบถามในหัวข้อที่เกี่ยวกับการเลิกสารเสพติดและการบำบัด"
+        )
+    
+    # ข้อผิดพลาดทั่วไป
+    else:
+        logging.error(f"ข้อผิดพลาด API ที่ไม่คาดคิดสำหรับผู้ใช้ {user_id}: {error_str}")
+        return (
+            "ขออภัยค่ะ เกิดข้อผิดพลาดในการประมวลผล\n"
+            "น้องใจดีกำลังหาทางแก้ไข กรุณาลองใหม่อีกครั้งในอีกสักครู่"
+        )
 
 def format_timestamp(timestamp: float, format_str: str = '%Y-%m-%d %H:%M:%S') -> str:
     """
@@ -186,3 +285,54 @@ def calculate_message_priority(message: str) -> int:
     
     # จำกัดค่าสูงสุดที่ 10
     return min(priority, 10)
+
+def clean_ai_response(response_text):
+    """
+    ทำความสะอาด response จาก AI model ก่อนส่งไปให้ผู้ใช้
+    
+    ลบ markup และข้อความที่ไม่ต้องการต่างๆ เช่น
+    - แท็ก <|start_header_id|>assistant<|end_header_id|>
+    - คำว่า "assistant" ที่ขึ้นต้นข้อความ
+    
+    Args:
+        response_text (str): ข้อความตอบกลับจาก AI model
+        
+    Returns:
+        str: ข้อความที่ทำความสะอาดแล้ว
+    """
+    if not response_text:
+        return ""
+    
+    # เก็บข้อความต้นฉบับเพื่อตรวจสอบการเปลี่ยนแปลง
+    original_text = response_text
+    
+    try:
+        # 1. ลบแท็ก <|start_header_id|>assistant<|end_header_id|> และแท็กที่คล้ายกัน
+        response_text = re.sub(r'<\|start_header_id\|>.*?<\|end_header_id\|>\s*', '', response_text)
+        
+        # 2. ลบรูปแบบแท็กอื่นๆ ที่อาจเกิดขึ้น
+        response_text = re.sub(r'<\|.*?\|>', '', response_text)
+        
+        # 3. ลบคำว่า "assistant" ที่ขึ้นต้นข้อความ
+        # รูปแบบต่างๆ ที่อาจเกิดขึ้น:
+        # - "assistant" อยู่บรรทัดแรกเพียงอย่างเดียว
+        # - "assistant" ตามด้วยบรรทัดว่าง
+        # - "assistant" ขึ้นต้นข้อความโดยไม่มีบรรทัดว่าง
+        response_text = re.sub(r'^assistant\s*\n+', '', response_text, flags=re.IGNORECASE)
+        response_text = re.sub(r'^assistant\s*[:]\s*', '', response_text, flags=re.IGNORECASE)
+        response_text = re.sub(r'^assistant\s+', '', response_text, flags=re.IGNORECASE)
+        
+        # 4. ลบช่องว่างและบรรทัดว่างที่มากเกินไป
+        response_text = re.sub(r'\n{3,}', '\n\n', response_text)  # ลดบรรทัดว่างที่ติดกันมากกว่า 2 บรรทัด
+        response_text = response_text.strip()  # ลบช่องว่างหัวท้าย
+        
+        # หากมีการเปลี่ยนแปลง ให้บันทึกลง log
+        if original_text != response_text:
+            logging.info(f"ทำความสะอาด response แล้ว: ลบแท็กและข้อความที่ไม่ต้องการออก")
+            
+        return response_text
+        
+    except Exception as e:
+        # หากเกิดข้อผิดพลาด กลับไปใช้ข้อความเดิม
+        logging.error(f"เกิดข้อผิดพลาดในการทำความสะอาด response: {str(e)}")
+        return original_text
