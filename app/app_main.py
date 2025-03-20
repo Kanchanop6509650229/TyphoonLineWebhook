@@ -722,15 +722,7 @@ def schedule_follow_up(user_id, interaction_date=None):
         interaction_date (datetime, optional): วันที่ปฏิสัมพันธ์ (ถ้าไม่ระบุจะหาจากฐานข้อมูล)
     """
     try:
-        # ตรวจสอบว่ามีการกำหนดการติดตามไว้แล้วหรือไม่
-        exists_in_queue = redis_client.zscore('follow_up_queue', user_id)
-        
-        # ถ้าผู้ใช้มีอยู่ในคิวอยู่แล้ว ไม่ต้องกำหนดซ้ำ
-        if exists_in_queue:
-            logging.debug(f"ผู้ใช้ {user_id} มีการติดตามกำหนดไว้แล้ว ไม่มีการเปลี่ยนแปลง")
-            return
-            
-        # หาวันที่ของข้อความแรกสุด
+        # หาวันที่ของข้อความแรกสุด (ถ้าไม่ได้ระบุมา)
         if interaction_date is None:
             # ตรวจสอบว่ามีการเก็บเวลาเริ่มต้นไว้ใน Redis หรือไม่
             first_interaction_time = redis_client.get(f"first_interaction:{user_id}")
@@ -759,7 +751,7 @@ def schedule_follow_up(user_id, interaction_date=None):
                     
                     if first_timestamp:
                         interaction_date = first_timestamp
-                        # เก็บเวลาเริ่มต้นลง Redis เพื่อใช้อ้างอิงในอนาคต
+                        # เก็บเวลาเริ่มต้นลง Redis เพื่อใช้อ้างอิงในอนาคต (ไม่มีเวลาหมดอายุ)
                         redis_client.set(
                             f"first_interaction:{user_id}",
                             interaction_date.timestamp()
@@ -783,20 +775,49 @@ def schedule_follow_up(user_id, interaction_date=None):
         if not isinstance(interaction_date, datetime):
             logging.warning(f"ค่า interaction_date ไม่ใช่ประเภท datetime ใช้เวลาปัจจุบันแทน")
             interaction_date = datetime.now()
-                
+        
+        # บันทึกข้อมูลวันที่เริ่มต้นลงใน Redis (ถ้ายังไม่มี)
+        redis_client.setnx(f"first_interaction:{user_id}", interaction_date.timestamp())
+        
+        # ดึงข้อมูลการติดตามล่าสุด (ถ้ามี)
+        last_follow_up = redis_client.get(f"last_follow_up:{user_id}")
+        next_follow_idx = 0
+        
+        if last_follow_up:
+            # แปลงจาก bytes เป็น string ถ้าจำเป็น
+            if isinstance(last_follow_up, bytes):
+                last_follow_up = last_follow_up.decode('utf-8')
+            
+            # หาดัชนีถัดไปใน FOLLOW_UP_INTERVALS
+            try:
+                last_idx = FOLLOW_UP_INTERVALS.index(int(last_follow_up))
+                next_follow_idx = last_idx + 1
+                # ถ้าเกินขอบเขต ให้ใช้วันสุดท้าย
+                if next_follow_idx >= len(FOLLOW_UP_INTERVALS):
+                    next_follow_idx = len(FOLLOW_UP_INTERVALS) - 1
+            except (ValueError, IndexError):
+                # ถ้าไม่พบค่าใน FOLLOW_UP_INTERVALS หรือเกิดข้อผิดพลาด ให้เริ่มจาก 0
+                next_follow_idx = 0
+        
         # กำหนดการติดตามตามช่วงเวลาที่กำหนด
         current_date = datetime.now()
         scheduled = False
         
-        for days in FOLLOW_UP_INTERVALS:
+        # ลูปเริ่มจากดัชนีที่คำนวณได้ (ไม่ใช่ตั้งแต่ดัชนี 0 เสมอ)
+        for i in range(next_follow_idx, len(FOLLOW_UP_INTERVALS)):
+            days = FOLLOW_UP_INTERVALS[i]
             follow_up_date = interaction_date + timedelta(days=days)
+            
             # กำหนดการติดตามสำหรับวันที่ในอนาคตเท่านั้น
             if follow_up_date > current_date:
                 redis_client.zadd(
                     'follow_up_queue',
                     {user_id: follow_up_date.timestamp()}
                 )
-                logging.info(f"กำหนดการติดตามผู้ใช้ {user_id} ในวันที่ {follow_up_date.strftime('%Y-%m-%d')} (+{days} วัน)")
+                # บันทึกว่าการติดตามล่าสุดคือวันที่เท่าไร
+                redis_client.set(f"last_follow_up:{user_id}", str(days))
+                
+                logging.info(f"กำหนดการติดตามผู้ใช้ {user_id} ในวันที่ {follow_up_date.strftime('%Y-%m-%d')} (+{days} วัน จากวันแรก)")
                 scheduled = True
                 break
         
@@ -807,7 +828,7 @@ def schedule_follow_up(user_id, interaction_date=None):
         logging.error(f"เกิดข้อผิดพลาดในการกำหนดการติดตามผล: {str(e)}")
 
 def check_and_send_follow_ups():
-    """ตรวจสอบและส่งการติดตามที่ถึงกำหนด"""
+    """ตรวจสอบและส่งการติดตามที่ถึงกำหนด พร้อมกำหนดการติดตามครั้งถัดไป"""
     logging.info("กำลังรันการตรวจสอบการติดตามผลตามกำหนดเวลา")
     try:
         current_time = datetime.now().timestamp()
@@ -837,6 +858,11 @@ def check_and_send_follow_ups():
                 # บันทึกการติดตามลงในฐานข้อมูล
                 db.update_follow_up_status(user_id, 'sent', datetime.now())
                 logging.info(f"ส่งการติดตามไปยังผู้ใช้: {user_id}")
+                
+                # กำหนดการติดตามครั้งถัดไปโดยอัตโนมัติ
+                # ส่งค่า None เพื่อให้ใช้วันที่เริ่มต้นจาก Redis
+                schedule_follow_up(user_id, None)
+                
             except Exception as e:
                 logging.error(f"เกิดข้อผิดพลาดในการส่งการติดตามไปยัง {user_id}: {str(e)}")
                 
