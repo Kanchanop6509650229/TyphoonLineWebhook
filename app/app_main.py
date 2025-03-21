@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from flask import Flask, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, FollowEvent
 from together import Together
 import redis
 from random import choice
@@ -698,6 +698,68 @@ def generate_progress_report(user_id):
         logging.error(f"เกิดข้อผิดพลาดในการสร้างรายงานความก้าวหน้า: {str(e)}")
         return "ไม่สามารถสร้างรายงานได้"
 
+def is_user_registered(user_id):
+    """ตรวจสอบว่าผู้ใช้ลงทะเบียนแล้วหรือไม่"""
+    conn = mysql_pool.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT EXISTS(SELECT 1 FROM registration_codes WHERE user_id = %s AND status = %s)',
+            (user_id, 'verified')
+        )
+        return bool(cursor.fetchone()[0])
+    finally:
+        cursor.close()
+        conn.close()
+
+def register_user_with_code(user_id, code):
+    """ยืนยันการลงทะเบียนด้วยรหัสยืนยัน"""
+    conn = mysql_pool.get_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # ตรวจสอบว่ารหัสมีอยู่และยังไม่หมดอายุ
+        cursor.execute(
+            'SELECT code FROM registration_codes WHERE code = %s AND status = %s',
+            (code, 'pending')
+        )
+        result = cursor.fetchone()
+        
+        if not result:
+            return False, "รหัสยืนยันไม่ถูกต้องหรือหมดอายุแล้ว"
+            
+        # อัพเดทรหัสให้เชื่อมกับผู้ใช้และสถานะเป็น verified
+        cursor.execute(
+            'UPDATE registration_codes SET user_id = %s, status = %s, verified_at = %s WHERE code = %s',
+            (user_id, 'verified', datetime.now(), code)
+        )
+        conn.commit()
+        
+        return True, "ลงทะเบียนเรียบร้อยแล้ว! คุณสามารถใช้งานแชทบอทได้ทันที"
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"เกิดข้อผิดพลาดในการลงทะเบียน: {str(e)}")
+        return False, "เกิดข้อผิดพลาดในการลงทะเบียน กรุณาลองอีกครั้ง"
+    finally:
+        cursor.close()
+        conn.close()
+
+def send_registration_message(user_id):
+    """ส่งข้อความแนะนำการลงทะเบียน"""
+    register_message = (
+        "สวัสดีค่ะ! ยินดีต้อนรับสู่แชทบอท 'ใจดี'\n\n"
+        "เพื่อเริ่มใช้งาน คุณจำเป็นต้องลงทะเบียนก่อน โดยทำตามขั้นตอนดังนี้:\n\n"
+        "1. กรอกแบบฟอร์มที่ลิงก์นี้: https://forms.gle/YourFormLink\n"
+        "2. หลังกรอกเสร็จ คุณจะได้รับรหัสยืนยัน 6 หลัก\n"
+        "3. นำรหัสมาพิมพ์ที่นี่ พร้อมพิมพ์ \"/verify\" นำหน้า เช่น \"/verify 123456\"\n\n"
+        "หากมีข้อสงสัย พิมพ์ /help เพื่อดูคำแนะนำ"
+    )
+    
+    line_bot_api.push_message(
+        user_id,
+        TextSendMessage(text=register_message)
+    )
+
 # ฟังก์ชันที่เกี่ยวข้องกับการล็อคข้อความ
 def is_user_locked(user_id):
     """ตรวจสอบว่าผู้ใช้ถูกล็อคอยู่หรือไม่"""
@@ -1144,8 +1206,36 @@ def handle_command_with_processing(user_id, command):
     animation_success, _ = start_loading_animation(user_id, duration=10)
     
     response_text = None
+    command_parts = command.split()
+    base_command = command_parts[0].lower() if command_parts else ""
     
-    if command == '/reset':
+    # คำสั่งที่เกี่ยวข้องกับการลงทะเบียน - สามารถใช้ได้แม้ผู้ใช้ยังไม่ได้ลงทะเบียน
+    if base_command == '/register':
+        send_registration_message(user_id)
+        response_text = (
+            "📝 ขั้นตอนการลงทะเบียน\n\n"
+            "1️⃣ กรอกแบบฟอร์มที่ลิงก์ด้านล่าง\n"
+            "2️⃣ คุณจะได้รับรหัสยืนยัน 6 หลัก\n"
+            "3️⃣ พิมพ์ '/verify' ตามด้วยรหัส 6 หลักที่ได้รับ\n\n"
+            "ลิงก์แบบฟอร์ม: https://forms.gle/YourGoogleFormLink"
+        )
+    
+    elif base_command == '/verify' and len(command_parts) > 1:
+        # รูปแบบคำสั่ง: /verify CODE
+        verify_code = command_parts[1].strip()
+        success, message = register_user_with_code(user_id, verify_code)
+        response_text = message
+    
+    # ตรวจสอบการลงทะเบียนสำหรับคำสั่งอื่นๆ
+    elif not is_user_registered(user_id) and base_command not in ['/register', '/help']:
+        response_text = (
+            "⚠️ คุณยังไม่ได้ลงทะเบียน\n\n"
+            "กรุณาลงทะเบียนก่อนใช้คำสั่งนี้\n"
+            "พิมพ์ /register เพื่อดูขั้นตอนการลงทะเบียน"
+        )
+        
+    # คำสั่งที่ใช้ได้เฉพาะเมื่อลงทะเบียนแล้ว
+    elif base_command == '/reset':
         db.clear_user_history(user_id)
         redis_client.delete(f"chat_session:{user_id}")
         redis_client.delete(f"session_tokens:{user_id}")
@@ -1155,7 +1245,7 @@ def handle_command_with_processing(user_id, command):
             "คุณต้องการพูดคุยเกี่ยวกับเรื่องอะไรดีคะ?"
         )
         
-    elif command == '/optimize':
+    elif base_command == '/optimize':
         # เพิ่มคำสั่งใหม่สำหรับการปรับประวัติการสนทนาโดยตรง
         token_count_before = get_session_token_count(user_id)
         hybrid_context_management(user_id)
@@ -1168,7 +1258,7 @@ def handle_command_with_processing(user_id, command):
             f"เราสามารถสนทนาต่อได้ตามปกติค่ะ"
         )
         
-    elif command == '/tokens':
+    elif base_command == '/tokens':
         # เพิ่มคำสั่งสำหรับตรวจสอบจำนวนโทเค็นในเซสชัน
         token_count = get_session_token_count(user_id)
         max_tokens = TOKEN_THRESHOLD
@@ -1182,7 +1272,7 @@ def handle_command_with_processing(user_id, command):
             f"{'⚠️ ใกล้ถึงขีดจำกัด โปรดใช้ /optimize เพื่อปรับปรุงประวัติ' if percentage > 80 else '✅ อยู่ในเกณฑ์ปกติ'}"
         )
         
-    elif command == '/help':
+    elif base_command == '/help':
         response_text = (
             "สวัสดีค่ะ 👋 ฉันคือน้องใจดี ผู้ช่วยดูแลและให้คำปรึกษาสำหรับผู้ที่ต้องการเลิกใช้สารเสพติด\n\n"
             "💬 ฉันสามารถช่วยคุณได้ดังนี้:\n"
@@ -1191,12 +1281,13 @@ def handle_command_with_processing(user_id, command):
             "- แนะนำเทคนิคจัดการความอยากและความเครียด\n"
             "- เชื่อมต่อกับบริการช่วยเหลือในกรณีฉุกเฉิน\n\n"
             "📋 คำสั่งที่ใช้ได้:\n"
+            "📝 /register - ดูวิธีลงทะเบียนใช้งาน\n"
+            "✅ /verify CODE - ยืนยันรหัสจาก Google Form\n"
             "📊 /status - ดูสถิติการใช้งานและข้อมูลเซสชัน\n"
             "📈 /progress - ดูรายงานความก้าวหน้าของคุณ\n"
             "🔄 /optimize - ปรับปรุงประวัติการสนทนาให้มีประสิทธิภาพ\n"
             "📈 /tokens - ตรวจสอบการใช้งานโทเค็นในเซสชันปัจจุบัน\n"
             "🚨 /emergency - ดูข้อมูลติดต่อฉุกเฉินและสายด่วน\n"
-            "📩 /feedback - ส่งความคิดเห็นเพื่อพัฒนาระบบ\n"
             "🔄 /reset - ล้างประวัติการสนทนาและเริ่มต้นใหม่\n"
             "❓ /help - แสดงเมนูช่วยเหลือนี้\n\n"
             "💡 ตัวอย่างคำถามที่สามารถถามฉันได้:\n"
@@ -1207,17 +1298,21 @@ def handle_command_with_processing(user_id, command):
             "เริ่มพูดคุยกับฉันได้เลยนะคะ ฉันพร้อมรับฟังและช่วยเหลือคุณ 💚"
         )
     
-    elif command == '/status':
+    elif base_command == '/status':
         history_count = db.get_user_history_count(user_id) 
         important_count = db.get_important_message_count(user_id)
         last_interaction = db.get_last_interaction(user_id)
         current_session = redis_client.exists(f"chat_session:{user_id}") == 1
         total_db_tokens = db.get_total_tokens(user_id) or 0
         session_tokens = get_session_token_count(user_id)
+        
+        # เพิ่มข้อมูลสถานะการลงทะเบียน
+        registration_status = "✅ ลงทะเบียนแล้ว" if is_user_registered(user_id) else "❌ ยังไม่ได้ลงทะเบียน"
 
         # อัพเดทข้อความสถานะพร้อมตัวเลขสำคัญ และชี้แจงความแตกต่าง
         response_text = (
             "📊 สถิติการสนทนาของคุณ\n"
+            f"▫️ สถานะการลงทะเบียน: {registration_status}\n"
             f"▫️ จำนวนการสนทนาที่บันทึก: {history_count} ครั้ง\n"
             f"▫️ ประเด็นสำคัญที่พูดคุย: {important_count} รายการ\n"
             f"▫️ สนทนาล่าสุดเมื่อ: {last_interaction}\n"
@@ -1231,7 +1326,7 @@ def handle_command_with_processing(user_id, command):
             "💬 มีคำถามหรือต้องการความช่วยเหลือ เพียงพิมพ์บอกฉันได้เลยค่ะ"
         )
 
-    elif command == '/emergency':
+    elif base_command == '/emergency':
         response_text = (
             "🚨 บริการช่วยเหลือฉุกเฉิน 🚨\n\n"
             "หากคุณหรือคนใกล้ตัวกำลังประสบปัญหาต่อไปนี้:\n"
@@ -1249,16 +1344,7 @@ def handle_command_with_processing(user_id, command):
             "💚 การขอความช่วยเหลือคือก้าวแรกของการดูแลตัวเอง"
         )
     
-    elif command == '/feedback':
-        response_text = (
-            "🌟 ความคิดเห็นของคุณมีคุณค่าต่อการพัฒนา\n\n"
-            "น้องใจดีต้องการพัฒนาให้ดียิ่งขึ้นสำหรับทุกคน\n"
-            "โปรดแสดงความคิดเห็นผ่านแบบฟอร์มนี้:\n"
-            "https://forms.gle/7K2y21gomWHGcWpq9\n\n"
-            "🙏 ขอบคุณที่ช่วยพัฒนาน้องใจดีให้ดีขึ้น"
-        )
-    
-    elif command == '/progress':
+    elif base_command == '/progress':
         report = generate_progress_report(user_id)
         response_text = report if report else (
             "📊 รายงานความก้าวหน้า\n\n"
@@ -1322,6 +1408,49 @@ def callback():
         abort(400)
 
     return 'OK'
+
+@app.route("/api/add-verification-code", methods=['POST'])
+@limiter.exempt
+def add_verification_code():
+    """API endpoint รับรหัสยืนยันจาก Google Apps Script"""
+    
+    # ตรวจสอบการรับรอง API key
+    api_key = request.json.get('api_key', '')
+    if api_key != os.getenv('FORM_WEBHOOK_KEY', 'your_secret_key_here'):
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    
+    # รับรหัสยืนยันจาก request
+    code = request.json.get('code', '')
+    if not code or not code.isdigit() or len(code) != 6:
+        return jsonify({"success": False, "error": "Invalid verification code"}), 400
+    
+    # บันทึกรหัสลงฐานข้อมูล
+    try:
+        conn = mysql_pool.get_connection()
+        cursor = conn.cursor()
+        
+        # ตรวจสอบว่ารหัสมีอยู่แล้วหรือไม่
+        cursor.execute('SELECT code FROM registration_codes WHERE code = %s', (code,))
+        if cursor.fetchone():
+            return jsonify({"success": False, "error": "Code already exists"}), 409
+        
+        # บันทึกรหัสใหม่
+        cursor.execute(
+            'INSERT INTO registration_codes (code, created_at, status) VALUES (%s, %s, %s)',
+            (code, datetime.now(), 'pending')
+        )
+        conn.commit()
+        
+        logging.info(f"บันทึกรหัสยืนยันใหม่: {code}")
+        return jsonify({"success": True, "message": "Verification code added successfully"}), 201
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการบันทึกรหัสยืนยัน: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if 'conn' in locals() and conn:
+            cursor.close()
+            conn.close()
 
 @app.route("/admin/sync_tokens/<user_id>", methods=['POST'])
 @limiter.exempt  # ยกเว้นการจำกัดอัตรา
@@ -1468,8 +1597,48 @@ def get_memory_usage():
 def handle_message(event):
     user_id = event.source.user_id
     user_message = event.message.text
-
-    # ตรวจสอบการล็อค
+    
+    # ตรวจสอบว่าเป็นการยืนยันรหัสหรือไม่
+    if user_message.lower().startswith("ยืนยัน"):
+        try:
+            # แยกรหัสยืนยันออกจากข้อความ
+            confirmation_code = user_message.split()[1].strip()
+            success, message = register_user_with_code(user_id, confirmation_code)
+            
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=message)
+            )
+            return
+        except (IndexError, ValueError):
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="รูปแบบไม่ถูกต้อง กรุณาพิมพ์ \"ยืนยัน ตามด้วยรหัส 6 หลัก\"")
+            )
+            return
+    
+    # คำสั่งขอลิงก์ลงทะเบียนใหม่
+    if user_message.lower() == "/register":
+        send_registration_message(user_id)
+        return
+    
+    # ตรวจสอบการลงทะเบียนก่อนประมวลผลข้อความปกติ
+    if not is_user_registered(user_id):
+        # ตรวจสอบว่าเคยส่งข้อความลงทะเบียนแล้วหรือไม่
+        registration_sent = redis_client.exists(f"registration_sent:{user_id}")
+        
+        if not registration_sent:
+            send_registration_message(user_id)
+            # เก็บสถานะว่าส่งข้อความลงทะเบียนแล้ว (หมดอายุใน 1 วัน)
+            redis_client.setex(f"registration_sent:{user_id}", 86400, "1")
+        else:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="คุณยังไม่ได้ลงทะเบียน กรุณาลงทะเบียนก่อนใช้งาน พิมพ์ /register เพื่อดูวิธีลงทะเบียน")
+            )
+        return
+    
+    # ถ้าลงทะเบียนแล้ว ดำเนินการปกติ
     if is_user_locked(user_id):
         handle_locked_user(user_id)
         return
@@ -1480,6 +1649,25 @@ def handle_message(event):
         process_user_message(user_id, user_message, event.reply_token)
     finally:
         unlock_user(user_id)
+
+@handler.add(FollowEvent)
+def handle_follow(event):
+    user_id = event.source.user_id
+    
+    # ส่งข้อความต้อนรับและขอให้ลงทะเบียน
+    welcome_message = (
+        "ขอบคุณที่เพิ่มน้องใจดีเป็นเพื่อน! 👋\n\n"
+        "น้องใจดีพร้อมเป็นเพื่อนคุยและช่วยเหลือคุณในเรื่องการเลิกสารเสพติด\n\n"
+        "👉 ก่อนเริ่มต้นใช้งาน กรุณาลงทะเบียนตามขั้นตอนง่ายๆ"
+    )
+    
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=welcome_message)
+    )
+    
+    # ส่งข้อความลงทะเบียนแบบ push message เพื่อให้แน่ใจว่าผู้ใช้ได้รับ
+    send_registration_message(user_id)
 
 # เริ่มต้นตัวกำหนดการ
 scheduler = BackgroundScheduler()

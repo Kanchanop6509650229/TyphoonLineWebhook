@@ -118,6 +118,31 @@ class DatabaseInitializer:
                 """)
                 logging.info("สร้างตาราง user_metrics สำเร็จ")
             
+            # ตรวจสอบว่ามีตาราง registration_codes หรือไม่
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM information_schema.tables 
+                WHERE table_schema = DATABASE()
+                AND table_name = 'registration_codes'
+            """)
+            
+            if cursor.fetchone()[0] == 0:
+                logging.info("ไม่พบตาราง registration_codes กำลังสร้าง...")
+                # สร้างตาราง registration_codes
+                cursor.execute("""
+                    CREATE TABLE registration_codes (
+                        code VARCHAR(10) PRIMARY KEY,
+                        user_id VARCHAR(50),
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        verified_at DATETIME,
+                        status ENUM('pending', 'verified', 'expired') DEFAULT 'pending',
+                        form_data JSON,
+                        INDEX idx_user_id (user_id),
+                        INDEX idx_status (status)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                """)
+                logging.info("สร้างตาราง registration_codes สำเร็จ")
+            
             conn.commit()
             logging.info("การเริ่มต้นฐานข้อมูลสำเร็จ")
             return True
