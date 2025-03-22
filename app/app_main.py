@@ -1203,8 +1203,19 @@ def send_session_timeout_message(user_id):
 def handle_command_with_processing(user_id, command):
     """จัดการคำสั่งพร้อมแสดงสถานะประมวลผล"""
     
-    # ตรวจสอบคำสั่ง verify ก่อน
+    # ตรวจสอบคำสั่ง verify
     if command.startswith('/verify'):
+        # ตรวจสอบว่าผู้ใช้ลงทะเบียนแล้วหรือไม่
+        if is_user_registered(user_id):
+            send_final_response(
+                user_id, 
+                "✅ คุณได้ลงทะเบียนและยืนยันตัวตนเรียบร้อยแล้ว\n"
+                "ไม่จำเป็นต้องยืนยันอีกครั้ง คุณสามารถใช้บริการของน้องใจดีได้ตามปกติ\n\n"
+                "พิมพ์ /help เพื่อดูคำสั่งและบริการที่มี"
+            )
+            return
+            
+        # ดำเนินการต่อสำหรับผู้ที่ยังไม่ได้ลงทะเบียน
         parts = command.split()
         if len(parts) != 2:
             send_final_response(user_id, "รูปแบบไม่ถูกต้อง กรุณาพิมพ์ \"/verify\" ตามด้วยรหัส 6 หลัก เช่น \"/verify 123456\"")
@@ -1590,6 +1601,16 @@ def handle_message(event):
     
     # ตรวจสอบว่าเป็นการยืนยันรหัสด้วย /verify หรือไม่
     if user_message.lower().startswith("/verify"):
+        # ตรวจสอบว่าผู้ใช้ลงทะเบียนแล้วหรือไม่
+        if is_user_registered(user_id):
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="✅ คุณได้ลงทะเบียนและยืนยันตัวตนเรียบร้อยแล้ว\n"
+                                    "ไม่จำเป็นต้องยืนยันอีกครั้ง คุณสามารถใช้บริการของน้องใจดีได้ตามปกติ")
+            )
+            return
+            
+        # ดำเนินการต่อสำหรับผู้ที่ยังไม่ได้ลงทะเบียน
         try:
             # แยกรหัสยืนยันออกจากข้อความ
             parts = user_message.split()
