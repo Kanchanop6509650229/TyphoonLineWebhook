@@ -25,19 +25,21 @@ try:
     from .token_counter import TokenCounter
     from .utils import safe_api_call, safe_db_operation
     from .config import load_config
-    
+    from .database_manager import DatabaseManager
+
     # ส่งออกส่วนประกอบที่จำเป็นสำหรับการใช้งานจากภายนอก
     __all__ = [
-        'app', 
-        'init_scheduler', 
-        'AsyncTogetherClient', 
-        'ChatHistoryDB', 
+        'app',
+        'init_scheduler',
+        'AsyncTogetherClient',
+        'ChatHistoryDB',
         'TokenCounter',
         'safe_api_call',
         'safe_db_operation',
-        'load_config'
+        'load_config',
+        'DatabaseManager'
     ]
-    
+
 except ImportError as e:
     logging.error(f"เกิดข้อผิดพลาดในการนำเข้าโมดูล: {str(e)}")
     # ส่งออกเฉพาะเวอร์ชันในกรณีที่มีข้อผิดพลาดในการนำเข้า
