@@ -38,6 +38,7 @@ try:
     )
     from .risk_assessment import (
         init_risk_assessment,
+        load_risk_keywords,
         assess_risk,
         save_progress_data,
         generate_progress_report,
@@ -61,6 +62,7 @@ try:
         'update_last_activity',
         'hybrid_context_management',
         'init_risk_assessment',
+        'load_risk_keywords',
         'assess_risk',
         'save_progress_data',
         'generate_progress_report'

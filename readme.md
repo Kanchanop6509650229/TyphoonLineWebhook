@@ -12,6 +12,7 @@ TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guida
 - **Progress Tracking**: Monitors user interactions and risk levels over time
 - **Session Management**: Maintains conversation context with timeout notifications
 - **Multi-component Architecture**: Uses Redis for caching, MySQL for persistent storage, and LINE for messaging
+- **Customizable Risk Keywords**: Load additional keywords from a JSON file to tailor risk detection
 
 ## 📋 Requirements
 
@@ -84,6 +85,7 @@ TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guida
 | `MYSQL_PASSWORD` | MySQL password | - |
 | `MYSQL_DB` | MySQL database name | chatbot |
 | `LOG_LEVEL` | Logging level | INFO |
+| `RISK_KEYWORDS_PATH` | Path to custom risk keyword JSON | risk_keywords.json |
 
 ### LINE Webhook Configuration
 
@@ -173,6 +175,10 @@ pytest tests/
 ### Logging
 
 Logs are stored in the `logs/` directory and rotated automatically when they reach 5&nbsp;MB. Verbosity is configurable through the `LOG_LEVEL` environment variable.
+
+### Custom Risk Keywords
+
+Define additional keywords in a JSON file and set `RISK_KEYWORDS_PATH` to load it.
 
 ## 📱 Usage
 

@@ -1,10 +1,15 @@
 """Risk assessment utilities for the Jai Dee chatbot."""
 import json
+import os
+import json
 import logging
 from datetime import datetime
 from typing import Dict, Tuple, List
 
 redis_client = None
+
+# Default keywords can be overridden by loading from a JSON file
+# via the `RISK_KEYWORDS_PATH` environment variable.
 
 RISK_KEYWORDS = {
     'high_risk': [
@@ -19,10 +24,27 @@ RISK_KEYWORDS = {
 }
 
 
+def load_risk_keywords(path: str) -> None:
+    """Load risk keywords from a JSON file."""
+    global RISK_KEYWORDS
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                RISK_KEYWORDS = data
+                logging.info(f"Loaded risk keywords from {path}")
+    except Exception as e:
+        logging.error(f"Could not load risk keywords from {path}: {str(e)}")
+
+
 def init_risk_assessment(redis_instance) -> None:
-    """Initialize Redis client for risk assessment."""
+    """Initialize Redis client and load custom risk keywords."""
     global redis_client
     redis_client = redis_instance
+
+    keywords_path = os.getenv("RISK_KEYWORDS_PATH")
+    if keywords_path:
+        load_risk_keywords(keywords_path)
 
 
 def assess_risk(message: str) -> Tuple[str, List[str]]:
