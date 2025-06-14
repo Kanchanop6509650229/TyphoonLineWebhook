@@ -5,6 +5,7 @@
 import os
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import requests
 import time
 import threading
@@ -28,6 +29,21 @@ from .config import load_config, SYSTEM_MESSAGES, GENERATION_CONFIG, SUMMARY_GEN
 from .utils import safe_db_operation, safe_api_call, clean_ai_response, handle_together_api_error
 from .chat_history_db import ChatHistoryDB
 from .token_counter import TokenCounter
+from .session_manager import (
+    init_session_manager,
+    get_chat_session,
+    save_chat_session,
+    check_session_timeout,
+    update_last_activity,
+    hybrid_context_management,
+    is_important_message,
+)
+from .risk_assessment import (
+    init_risk_assessment,
+    assess_risk,
+    save_progress_data,
+    generate_progress_report,
+)
 from .async_api import AsyncTogetherClient
 from .database_init import initialize_database
 from .database_manager import DatabaseManager
@@ -35,12 +51,13 @@ from .database_manager import DatabaseManager
 # สร้างอินสแตนซ์แอป Flask
 app = Flask(__name__)
 
-# ตั้งค่าการบันทึกข้อมูล
+# ตั้งค่าการบันทึกข้อมูลและหมุนไฟล์เมื่อขนาดเกิน 5MB
+os.makedirs('logs', exist_ok=True)
 logging.basicConfig(
     level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO')),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('app.log'),
+        RotatingFileHandler('logs/app.log', maxBytes=5 * 1024 * 1024, backupCount=3),
         logging.StreamHandler()
     ]
 )
@@ -94,6 +111,10 @@ try:
     # เริ่มต้น ChatHistoryDB ด้วย DatabaseManager
     db = ChatHistoryDB(db_manager)
 
+    # ตั้งค่าโมดูลจัดการเซสชันและประเมินความเสี่ยง
+    init_session_manager(redis_client, line_bot_api, token_counter, SESSION_TIMEOUT)
+    init_risk_assessment(redis_client)
+
 except Exception as e:
     logging.critical(f"เกิดข้อผิดพลาดในการเริ่มต้นแอปพลิเคชัน: {str(e)}")
     raise
@@ -113,302 +134,6 @@ PROCESSING_MESSAGES = [
 ]
 
 # คำที่บ่งชี้ความเสี่ยง
-RISK_KEYWORDS = {
-    'high_risk': [
-        'ฆ่าตัวตาย', 'ทำร้ายตัวเอง', 'อยากตาย',
-        'เกินขนาด', 'overdose', 'od',
-        'เลือดออก', 'ชัก', 'หมดสติ'
-    ],
-    'medium_risk': [
-        'นอนไม่หลับ', 'เครียด', 'กังวล',
-        'ซึมเศร้า', 'เหงา', 'ท้อแท้'
-    ]
-}
-
-# ฟังก์ชันเกี่ยวกับการดำเนินการเซสชัน
-def get_chat_session(user_id):
-    """ดึงหรือสร้างเซสชันการแชทจาก Redis"""
-    try:
-        history = redis_client.get(f"chat_session:{user_id}")
-        if history:
-            loaded_history = json.loads(history)
-            return [
-                {"role": msg_data["role"], "content": msg_data["content"]}
-                for msg_data in loaded_history
-            ]
-        return []
-    except redis.RedisError as e:
-        logging.error(f"Redis error in get_chat_session: {str(e)}")
-        return []
-
-def save_chat_session(user_id, messages):
-    """บันทึกเซสชันการแชทไปยัง Redis"""
-    try:
-        # เก็บข้อความทั้งหมดไม่เกิน 100 ข้อความล่าสุด (เพิ่มจาก 10 เป็น 100)
-        # เพื่อให้มีโอกาสที่ จำนวนโทเค็นจะเข้าใกล้ TOKEN_THRESHOLD
-        max_messages = 100
-
-        serialized_history = [
-            {"role": msg["role"], "content": msg["content"]}
-            for msg in messages[-max_messages:]  # เก็บเฉพาะ max_messages ข้อความล่าสุด
-        ]
-
-        # บันทึกลง Redis พร้อมกำหนดเวลาหมดอายุ 24 ชั่วโมง
-        redis_client.setex(
-            f"chat_session:{user_id}",
-            3600 * 24,  # หมดอายุหลังจาก 24 ชั่วโมง
-            json.dumps(serialized_history)
-        )
-
-        # บันทึกจำนวนโทเค็นปัจจุบัน
-        token_count = token_counter.count_message_tokens(serialized_history)
-        redis_client.setex(
-            f"session_tokens:{user_id}",
-            3600 * 24,  # หมดอายุเท่ากับเซสชัน
-            str(token_count)
-        )
-
-        logging.debug(f"บันทึกเซสชัน: {len(serialized_history)} ข้อความ, {token_count} โทเค็น สำหรับผู้ใช้ {user_id}")
-    except redis.RedisError as e:
-        logging.error(f"Redis error in save_chat_session: {str(e)}")
-
-def check_session_timeout(user_id):
-    """ตรวจสอบ timeout ของเซสชัน"""
-    try:
-        last_activity = redis_client.get(f"last_activity:{user_id}")
-        if last_activity:
-            # แปลงจาก bytes เป็น string ถ้าจำเป็น
-            if isinstance(last_activity, bytes):
-                last_activity = last_activity.decode('utf-8')
-
-            last_activity_time = float(last_activity)
-            if (datetime.now().timestamp() - last_activity_time) > SESSION_TIMEOUT:
-                # ล้างเซสชัน
-                redis_client.delete(f"chat_session:{user_id}")
-                return True
-        return False
-    except Exception as e:
-        logging.error(f"เกิดข้อผิดพลาดในการตรวจสอบ session timeout สำหรับผู้ใช้ {user_id}: {str(e)}")
-        return False
-
-def update_last_activity(user_id):
-    """อัพเดทเวลาการใช้งานล่าสุด และตรวจสอบการแจ้งเตือน"""
-    try:
-        current_time = datetime.now().timestamp()
-        last_activity = redis_client.get(f"last_activity:{user_id}")
-        warning_sent = redis_client.get(f"timeout_warning:{user_id}")
-
-        # แปลงจาก bytes เป็น string ถ้าจำเป็น
-        if isinstance(last_activity, bytes):
-            last_activity = last_activity.decode('utf-8')
-        if isinstance(warning_sent, bytes):
-            warning_sent = warning_sent.decode('utf-8')
-
-        if last_activity:
-            time_passed = current_time - float(last_activity)
-            # ถ้าเวลาผ่านไป 6 วัน (1 วันก่อนหมด session) และยังไม่เคยส่งการแจ้งเตือน
-            if time_passed > (SESSION_TIMEOUT - 86400) and not warning_sent:  # 86400 = 1 วัน
-                warning_message = (
-                    "⚠️ เซสชันของคุณจะหมดอายุในอีก 1 วัน\n"
-                    "หากต้องการคุยต่อ กรุณาพิมพ์ข้อความใดๆ เพื่อต่ออายุเซสชัน"
-                )
-                line_bot_api.push_message(
-                    user_id,
-                    TextSendMessage(text=warning_message)
-                )
-                # ตั้งค่าว่าได้ส่งการแจ้งเตือนแล้ว
-                redis_client.setex(
-                    f"timeout_warning:{user_id}",
-                    86400,  # หมดอายุใน 1 วัน
-                    "1"
-                )
-                logging.info(f"ส่งการแจ้งเตือนหมดเวลาเซสชันไปยังผู้ใช้: {user_id}")
-
-        # อัพเดทเวลาใช้งานล่าสุด
-        redis_client.setex(
-            f"last_activity:{user_id}",
-            SESSION_TIMEOUT,
-            str(current_time)
-        )
-
-    except Exception as e:
-        logging.error(f"เกิดข้อผิดพลาดในการอัพเดทเวลาใช้งานล่าสุดสำหรับผู้ใช้ {user_id}: {str(e)}")
-
-# ฟังก์ชันที่ปรับปรุงแล้วสำหรับการนับโทเค็น
-def get_session_token_count(user_id):
-    """
-    คำนวณจำนวนโทเค็นทั้งหมดในเซสชันปัจจุบัน
-
-    Args:
-        user_id (str): LINE User ID
-
-    Returns:
-        int: จำนวนโทเค็นในเซสชันปัจจุบัน
-    """
-    try:
-        # พยายามดึงจำนวนโทเค็นที่บันทึกไว้ก่อน (เพิ่มประสิทธิภาพ)
-        cached_count = redis_client.get(f"session_tokens:{user_id}")
-        if cached_count:
-            return int(cached_count)
-
-        # ถ้าไม่มีข้อมูลในแคช ให้คำนวณใหม่
-        session_data = redis_client.get(f"chat_session:{user_id}")
-        if not session_data:
-            return 0
-
-        # แปลงข้อมูล JSON เป็น object
-        messages = json.loads(session_data)
-
-        # คำนวณโทเค็นโดยตรงจากข้อความทั้งหมด
-        token_count = token_counter.count_message_tokens(messages)
-
-        # บันทึกกลับไปที่แคช
-        redis_client.setex(
-            f"session_tokens:{user_id}",
-            3600 * 24,  # หมดอายุเท่ากับเซสชัน
-            str(token_count)
-        )
-
-        return token_count
-    except Exception as e:
-        logging.error(f"เกิดข้อผิดพลาดในการคำนวณโทเค็นของเซสชัน: {str(e)}")
-        return 0
-
-def is_important_message(user_message, bot_response):
-    """
-    ตรวจสอบว่าข้อความนี้มีความสำคัญหรือไม่
-
-    Args:
-        user_message (str): ข้อความของผู้ใช้
-        bot_response (str): คำตอบของบอท
-
-    Returns:
-        bool: True หากข้อความมีความสำคัญ
-    """
-    # ตรวจสอบคำสำคัญในข้อความของผู้ใช้
-    important_keywords = [
-        'ฆ่าตัวตาย', 'ทำร้ายตัวเอง', 'อยากตาย',
-        'overdose', 'เกินขนาด', 'ก้าวร้าว',
-        'ซึมเศร้า', 'วิตกกังวล', 'ความทรงจำ',
-        'ไม่มีความสุข', 'ทรมาน', 'เครียด',
-        'เลิก', 'หยุด', 'อดทน', 'ยา', 'เสพ',
-        'บำบัด', 'กลับไปเสพ', 'อาการ', 'ถอนยา'
-    ]
-
-    combined_text = (user_message + " " + bot_response).lower()
-    for keyword in important_keywords:
-        if keyword.lower() in combined_text:
-            return True
-
-    # ตรวจสอบความยาวของข้อความ (ข้อความที่ยาวมักมีเนื้อหาสำคัญ)
-    if len(user_message) > 300 or len(bot_response) > 500:
-        return True
-
-    return False
-
-def hybrid_context_management(user_id):
-    """
-    จัดการบริบทการสนทนาแบบไฮบริด
-    ใช้ประโยชน์จาก context window ขนาดใหญ่แต่ยังคงประสิทธิภาพในการประมวลผล
-
-    Args:
-        user_id (str): LINE User ID
-
-    Returns:
-        list: ประวัติการสนทนาที่เหมาะสม
-    """
-    try:
-        # 1. ตรวจสอบขนาดของประวัติปัจจุบัน
-        current_history = get_chat_session(user_id)
-
-        # ถ้าไม่มีประวัติ ให้ส่งคืนรายการว่าง
-        if not current_history:
-            return []
-
-        current_tokens = get_session_token_count(user_id)
-
-        # ถ้ายังต่ำกว่าขีดจำกัด ให้ใช้ประวัติทั้งหมด
-        if current_tokens < TOKEN_THRESHOLD:
-            return current_history
-
-        logging.info(f"เซสชันใกล้เต็ม context window ({current_tokens} tokens) สำหรับผู้ใช้ {user_id}, กำลังจัดการประวัติ...")
-
-        # 2. จัดการเมื่อใกล้เต็ม context window
-        # เก็บข้อความล่าสุดเสมอ - เพิ่มจำนวนจาก 20 เป็น 30 เพื่อเก็บบริบทมากขึ้น
-        keep_recent = 30
-
-        # ตรวจสอบจำนวนข้อความที่มีอยู่
-        if len(current_history) <= keep_recent * 2:
-            # ถ้ามีน้อยกว่าหรือเท่ากับที่ต้องการเก็บ ส่งคืนทั้งหมด
-            return current_history
-
-        recent_messages = current_history[-keep_recent*2:]  # *2 เพราะแต่ละการโต้ตอบมี 2 ข้อความ (user + bot)
-
-        # สรุปประวัติที่เหลือ
-        older_messages = current_history[:-keep_recent*2]
-
-        if older_messages:
-            # ค้นหาข้อความสำคัญในส่วนเก่า
-            important_pairs = []
-            normal_pairs = []
-
-            for i in range(0, len(older_messages), 2):
-                if i+1 < len(older_messages):
-                    user_msg = older_messages[i].get("content", "")
-                    bot_resp = older_messages[i+1].get("content", "")
-
-                    # แยกข้อความสำคัญและข้อความทั่วไป
-                    if is_important_message(user_msg, bot_resp):
-                        important_pairs.append((user_msg, bot_resp))
-                    else:
-                        normal_pairs.append((user_msg, bot_resp))
-
-            # แปลงรูปแบบข้อความสำคัญเพื่อรวมใน context
-            important_messages = []
-            for user_msg, bot_resp in important_pairs:
-                important_messages.append({"role": "user", "content": user_msg})
-                important_messages.append({"role": "assistant", "content": bot_resp})
-
-            # สรุปข้อความทั่วไป
-            formatted_normal = []
-            for i, (user_msg, bot_resp) in enumerate(normal_pairs):
-                # จำลอง ID เพื่อใช้ในฟังก์ชัน summarize
-                formatted_normal.append((i, user_msg, bot_resp))
-
-            # สรุปข้อความทั่วไป
-            summary = ""
-            if formatted_normal:
-                summary = summarize_conversation_history(formatted_normal)
-
-            # สร้างประวัติชุดใหม่
-            new_history = []
-
-            # เพิ่มข้อความสรุปหากมี
-            if summary:
-                new_history.append({"role": "assistant", "content": f"สรุปการสนทนาก่อนหน้า: {summary}"})
-
-            # เพิ่มข้อความสำคัญ
-            new_history.extend(important_messages)
-
-            # เพิ่มข้อความล่าสุด
-            new_history.extend(recent_messages)
-
-            # อัพเดทเซสชัน
-            save_chat_session(user_id, new_history)
-
-            # คำนวณโทเค็นใหม่หลังจากการปรับปรุง
-            new_tokens = token_counter.count_message_tokens(new_history)
-
-            logging.info(f"สำเร็จ: จัดการประวัติการสนทนาสำหรับผู้ใช้ {user_id}, ลดจาก {current_tokens} เหลือ {new_tokens} tokens")
-
-            return new_history
-
-        return current_history
-
-    except Exception as e:
-        logging.error(f"เกิดข้อผิดพลาดในการจัดการประวัติแบบไฮบริด: {str(e)}")
-        # ส่งคืนประวัติปัจจุบันในกรณีที่มีข้อผิดพลาด
-        return get_chat_session(user_id)
 
 def chunk_conversation_history(history, chunk_size=10):
     """
@@ -636,67 +361,6 @@ def summarize_by_topic(history):
         logging.error(f"เกิดข้อผิดพลาดใน summarize_by_topic: {str(e)}")
         return ""
 
-# ฟังก์ชันที่เกี่ยวข้องกับความเสี่ยงและความก้าวหน้า
-def assess_risk(message):
-    """ประเมินความเสี่ยงจากข้อความ"""
-    message = message.lower()
-    risk_level = 'low'
-    matched_keywords = []
-
-    for keyword in RISK_KEYWORDS['high_risk']:
-        if keyword in message:
-            risk_level = 'high'
-            matched_keywords.append(keyword)
-
-    if risk_level == 'low':
-        for keyword in RISK_KEYWORDS['medium_risk']:
-            if keyword in message:
-                risk_level = 'medium'
-                matched_keywords.append(keyword)
-
-    return risk_level, matched_keywords
-
-def save_progress_data(user_id, risk_level, keywords):
-    """บันทึกข้อมูลความก้าวหน้า"""
-    try:
-        progress_data = {
-            'timestamp': datetime.now().isoformat(),
-            'risk_level': risk_level,
-            'keywords': keywords
-        }
-        redis_client.lpush(f"progress:{user_id}", json.dumps(progress_data))
-        redis_client.ltrim(f"progress:{user_id}", 0, 99)  # เก็บแค่ 100 รายการล่าสุด
-    except Exception as e:
-        logging.error(f"เกิดข้อผิดพลาดในการบันทึกความก้าวหน้า: {str(e)}")
-
-def generate_progress_report(user_id):
-    """สร้างรายงานความก้าวหน้า"""
-    try:
-        progress_data = redis_client.lrange(f"progress:{user_id}", 0, -1)
-        if not progress_data:
-            return "ยังไม่มีข้อมูลความก้าวหน้า"
-
-        data = [json.loads(item) for item in progress_data]
-
-        # วิเคราะห์แนวโน้มความเสี่ยง
-        risk_trends = {
-            'high': sum(1 for d in data if d['risk_level'] == 'high'),
-            'medium': sum(1 for d in data if d['risk_level'] == 'medium'),
-            'low': sum(1 for d in data if d['risk_level'] == 'low')
-        }
-
-        report = (
-            "📊 รายงานความก้าวหน้า\n\n"
-            f"📅 ช่วงเวลา: {data[-1]['timestamp'][:10]} ถึง {data[0]['timestamp'][:10]}\n"
-            f"📈 การประเมินความเสี่ยง:\n"
-            f"▫️ ความเสี่ยงสูง: {risk_trends['high']} ครั้ง\n"
-            f"▫️ ความเสี่ยงปานกลาง: {risk_trends['medium']} ครั้ง\n"
-            f"▫️ ความเสี่ยงต่ำ: {risk_trends['low']} ครั้ง\n"
-        )
-        return report
-    except Exception as e:
-        logging.error(f"เกิดข้อผิดพลาดในการสร้างรายงานความก้าวหน้า: {str(e)}")
-        return "ไม่สามารถสร้างรายงานได้"
 
 def is_user_registered(user_id):
     """ตรวจสอบว่าผู้ใช้ลงทะเบียนแล้วหรือไม่"""
