@@ -172,7 +172,7 @@ pytest tests/
 
 ### Logging
 
-Logs are stored in the `logs/` directory with configurable verbosity through the `LOG_LEVEL` environment variable.
+Logs are stored in the `logs/` directory and rotated automatically when they reach 5&nbsp;MB. Verbosity is configurable through the `LOG_LEVEL` environment variable.
 
 ## 📱 Usage
 
