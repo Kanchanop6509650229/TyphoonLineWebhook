@@ -201,5 +201,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 🙏 Acknowledgements
 
 - [LINE Messaging API](https://developers.line.biz/en/docs/messaging-api/)
-- [Together AI](https://Together.com/) for providing the chat model
+- [Together AI](https://www.together.ai/) for providing the chat model
 - [Flask](https://flask.palletsprojects.com/) web framework
