@@ -1,8 +1,8 @@
-# TogetherLineWebhook
+# TyphoonLineWebhook
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-TogetherLineWebhook is a LINE-based chatbot designed to provide support and guidance for individuals dealing with substance abuse issues. The chatbot leverages the Together AI model to deliver empathetic, non-judgmental responses in Thai language.
+TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guidance for individuals dealing with substance abuse issues. The chatbot leverages the Together AI model to deliver empathetic, non-judgmental responses in Thai language.
 
 ## 🌟 Features
 
@@ -27,8 +27,8 @@ TogetherLineWebhook is a LINE-based chatbot designed to provide support and guid
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/TogetherLineWebhook.git
-   cd TogetherLineWebhook
+   git clone https://github.com/yourusername/TyphoonLineWebhook.git
+   cd TyphoonLineWebhook
    ```
 
 2. Create a `.env` file from the template:
@@ -127,7 +127,7 @@ The application follows a modular architecture with these key components:
 ### Project Structure
 
 ```
-TogetherLineWebhook/
+TyphoonLineWebhook/
 │
 ├── app/                          # Application code
 │   ├── __init__.py               # Package initialization
