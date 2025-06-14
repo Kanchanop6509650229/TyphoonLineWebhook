@@ -6,17 +6,23 @@ from typing import Dict, Tuple, List
 
 redis_client = None
 
+# คำสำคัญที่ใช้ประเมินความเสี่ยงจากข้อความของผู้ใช้
+# เพิ่มคำที่เกี่ยวข้องกับการใช้สารเสพติดและอาการซึมเศร้าเพิ่มเติม
 RISK_KEYWORDS = {
-    'high_risk': [
-        'ฆ่าตัวตาย', 'ทำร้ายตัวเอง', 'อยากตาย',
-        'เกินขนาด', 'overdose', 'od',
-        'เลือดออก', 'ชัก', 'หมดสติ'
+    "high_risk": [
+        "ฆ่าตัวตาย", "ทำร้ายตัวเอง", "อยากตาย", "อยากจบชีวิต",
+        "เกินขนาด", "overdose", "od",
+        "เลือดออก", "ชัก", "หมดสติ"
     ],
-    'medium_risk': [
-        'นอนไม่หลับ', 'เครียด', 'กังวล',
-        'ซึมเศร้า', 'เหงา', 'ท้อแท้'
-    ]
+    "medium_risk": [
+        "นอนไม่หลับ", "เครียด", "กังวล", "วิตกกังวล",
+        "ซึมเศร้า", "เหงา", "ท้อแท้", "สิ้นหวัง",
+        "อยากใช้ยา", "อยากเสพ", "อยากกลับไปเสพ"
+    ],
 }
+
+# จำนวนคำความเสี่ยงระดับปานกลางที่จะยกระดับเป็นความเสี่ยงสูง
+MEDIUM_RISK_THRESHOLD = 2
 
 
 def init_risk_assessment(redis_instance) -> None:
@@ -26,23 +32,32 @@ def init_risk_assessment(redis_instance) -> None:
 
 
 def assess_risk(message: str) -> Tuple[str, List[str]]:
-    """Assess risk level from message."""
-    message = message.lower()
-    risk_level = 'low'
-    matched_keywords = []
+    """Assess risk level from message.
 
-    for keyword in RISK_KEYWORDS['high_risk']:
+    ระดับความเสี่ยงจะถูกยกระดับเป็น "high" หากพบคำความเสี่ยงระดับสูง
+    หรือพบคำความเสี่ยงระดับปานกลางหลายคำในข้อความเดียวกัน
+    """
+    message = message.lower()
+    matched_keywords: List[str] = []
+
+    # ตรวจหาคำความเสี่ยงสูง
+    for keyword in RISK_KEYWORDS["high_risk"]:
         if keyword in message:
-            risk_level = 'high'
             matched_keywords.append(keyword)
 
-    if risk_level == 'low':
-        for keyword in RISK_KEYWORDS['medium_risk']:
-            if keyword in message:
-                risk_level = 'medium'
-                matched_keywords.append(keyword)
+    if matched_keywords:
+        return "high", matched_keywords
 
-    return risk_level, matched_keywords
+    # ตรวจหาคำความเสี่ยงปานกลาง
+    medium_matches = [kw for kw in RISK_KEYWORDS["medium_risk"] if kw in message]
+    matched_keywords.extend(medium_matches)
+
+    if len(medium_matches) >= MEDIUM_RISK_THRESHOLD:
+        return "high", matched_keywords
+    elif medium_matches:
+        return "medium", matched_keywords
+
+    return "low", matched_keywords
 
 
 def save_progress_data(user_id: str, risk_level: str, keywords: List[str]) -> None:
