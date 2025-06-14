@@ -8,6 +8,7 @@ TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guida
 
 - **Conversational Support**: Engages users in supportive dialogue about substance use concerns
 - **Risk Assessment**: Automatically detects high-risk keywords and provides emergency resources
+- **Support Messages**: Sends supportive advice based on detected risk level
 - **Follow-up System**: Scheduled follow-ups to check on user progress (1, 3, 7, 14, and 30-day intervals)
 - **Progress Tracking**: Monitors user interactions and risk levels over time
 - **Session Management**: Maintains conversation context with timeout notifications
@@ -172,7 +173,7 @@ pytest tests/
 
 ### Logging
 
-Logs are stored in the `logs/` directory with configurable verbosity through the `LOG_LEVEL` environment variable.
+Logs are stored in the `logs/` directory and rotated automatically when they reach 5&nbsp;MB. Verbosity is configurable through the `LOG_LEVEL` environment variable.
 
 ## 📱 Usage
 

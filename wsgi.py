@@ -6,6 +6,7 @@
 import os
 import sys
 import logging
+from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 
 # เพิ่มไดเรกทอรีปัจจุบันลงในเส้นทางระบบ
@@ -14,12 +15,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # โหลดตัวแปรสภาพแวดล้อมจากไฟล์ .env
 load_dotenv()
 
-# ตั้งค่า logging
+# ตั้งค่า logging พร้อมหมุนไฟล์
+os.makedirs('logs', exist_ok=True)
 logging.basicConfig(
     level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO')),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('wsgi.log'),
+        RotatingFileHandler('logs/wsgi.log', maxBytes=5 * 1024 * 1024, backupCount=3),
         logging.StreamHandler()
     ]
 )
