@@ -1,52 +1,40 @@
 """
-โมดูลสำหรับการเรียกใช้ Together API แบบอะซิงโครนัส
+โมดูลสำหรับการเรียกใช้ DeepSeek API แบบอะซิงโครนัส
 ช่วยเพิ่มประสิทธิภาพการตอบสนองต่อผู้ใช้
 """
 import asyncio
-import httpx
+from openai import AsyncOpenAI
 import os
 import logging
 import json
 from typing import Dict, List, Any, Optional, Union
 
-class AsyncTogetherClient:
+class AsyncDeepseekClient:
     """
-    ไคลเอนต์แบบอะซิงโครนัสสำหรับการเรียกใช้ Together AI API
+    ไคลเอนต์แบบอะซิงโครนัสสำหรับการเรียกใช้ DeepSeek API
     """
-    def __init__(self, api_key: str, model: str = "scb10x/scb10x-llama3-1-typhoon2-60256"):
+    def __init__(self, api_key: str, model: str = "deepseek-chat"):
         """
-        สร้างไคลเอนต์อะซิงโครนัสสำหรับ Together AI
+        สร้างไคลเอนต์อะซิงโครนัสสำหรับ DeepSeek
         
         Args:
-            api_key (str): คีย์ API ของ Together
+            api_key (str): คีย์ API ของ DeepSeek
             model (str): ชื่อโมเดลที่ใช้
         """
         self.api_key = api_key
         self.model = model
-        self.client = None
+        self.client: Optional[AsyncOpenAI] = None
         
     async def setup(self):
-        """
-        เริ่มต้นไคลเอนต์ HTTP
-        
-        Returns:
-            AsyncTogetherClient: ตัวเองเพื่อให้สามารถรวมคำสั่งได้
-        """
+        """เริ่มต้นไคลเอนต์ AsyncOpenAI"""
         if self.client is None:
-            self.client = httpx.AsyncClient(
-                base_url="https://api.together.xyz",
-                timeout=60.0,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                }
-            )
+            self.client = AsyncOpenAI(api_key=self.api_key, base_url="https://api.deepseek.com")
         return self
         
     async def close(self):
         """ปิดไคลเอนต์ HTTP"""
         if self.client:
-            await self.client.aclose()
+            await self.client.close()
             self.client = None
             
     async def generate_completion(self, 
@@ -75,16 +63,12 @@ class AsyncTogetherClient:
         merged_config = {**default_config, **(config or {})}
             
         try:
-            response = await self.client.post(
-                "/v1/chat/completions",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    **merged_config
-                }
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                **merged_config
             )
-            response.raise_for_status()
-            return response.json()
+            return response
         except Exception as e:
             logging.error(f"Error in async API call: {str(e)}")
             raise

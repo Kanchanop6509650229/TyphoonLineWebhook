@@ -22,7 +22,7 @@ logging.basicConfig(
 # นำเข้าส่วนประกอบหลักเพื่อให้ใช้งานได้ง่าย
 try:
     from .app_main import app, init_scheduler
-    from .async_api import AsyncTogetherClient
+    from .async_api import AsyncDeepseekClient
     from .chat_history_db import ChatHistoryDB
     from .token_counter import TokenCounter
     from .utils import safe_api_call, safe_db_operation
@@ -47,7 +47,7 @@ try:
     __all__ = [
         'app',
         'init_scheduler',
-        'AsyncTogetherClient',
+        'AsyncDeepseekClient',
         'ChatHistoryDB',
         'TokenCounter',
         'safe_api_call',

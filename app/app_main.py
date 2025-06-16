@@ -1,6 +1,6 @@
 """
 แชทบอท 'ใจดี' - แอปพลิเคชันหลัก
-โค้ดหลักสำหรับการจัดการข้อความจาก LINE API และการตอบกลับด้วย Together AI
+โค้ดหลักสำหรับการจัดการข้อความจาก LINE API และการตอบกลับด้วย DeepSeek API
 """
 import os
 import json
@@ -15,7 +15,7 @@ from flask import Flask, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, FollowEvent
-from together import Together
+from openai import OpenAI
 import redis
 from random import choice
 import signal
@@ -26,7 +26,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # นำเข้าโมดูลภายในโปรเจค
 from .middleware.rate_limiter import init_limiter
 from .config import load_config, SYSTEM_MESSAGES, GENERATION_CONFIG, SUMMARY_GENERATION_CONFIG, TOKEN_THRESHOLD
-from .utils import safe_db_operation, safe_api_call, clean_ai_response, handle_together_api_error
+from .utils import safe_db_operation, safe_api_call, clean_ai_response, handle_deepseek_api_error
 from .chat_history_db import ChatHistoryDB
 from .token_counter import TokenCounter
 from .session_manager import (
@@ -45,7 +45,7 @@ from .risk_assessment import (
     save_progress_data,
     generate_progress_report,
 )
-from .async_api import AsyncTogetherClient
+from .async_api import AsyncDeepseekClient
 from .database_init import initialize_database
 from .database_manager import DatabaseManager
 
@@ -85,12 +85,12 @@ try:
     line_bot_api = LineBotApi(config.LINE_CHANNEL_ACCESS_TOKEN)
     handler = WebhookHandler(config.LINE_CHANNEL_SECRET)
 
-    # เริ่มต้น Together client
-    together_client = Together(api_key=config.TOGETHER_API_KEY)
+    # เริ่มต้น DeepSeek client
+    deepseek_client = OpenAI(api_key=config.DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
     # เริ่มต้น Async client สำหรับการประมวลผลเบื้องหลัง
-    async_together = AsyncTogetherClient(config.TOGETHER_API_KEY, config.TOGETHER_MODEL)
-    threading.Thread(target=lambda: asyncio.run(async_together.setup())).start()
+    async_deepseek = AsyncDeepseekClient(config.DEEPSEEK_API_KEY, config.DEEPSEEK_MODEL)
+    threading.Thread(target=lambda: asyncio.run(async_deepseek.setup())).start()
 
     # เริ่มต้นตัวนับโทเค็นที่ปรับปรุงแล้ว
     token_counter = TokenCounter(cache_size=5000)
@@ -170,8 +170,8 @@ def summarize_conversation_chunk(chunk):
         for _, msg, resp in chunk:
             summary_prompt += f"\nผู้ใช้: {msg}\nบอท: {resp}\n"
 
-        response = together_client.chat.completions.create(
-            model=config.TOGETHER_MODEL,
+        response = deepseek_client.chat.completions.create(
+            model=config.DEEPSEEK_MODEL,
             messages=[
                 SYSTEM_MESSAGES,
                 {"role": "user", "content": summary_prompt}
@@ -296,8 +296,8 @@ def summarize_conversation_history(history):
         for _, msg, resp in history:
             summary_prompt += f"\nผู้ใช้: {msg}\nบอท: {resp}\n"
 
-        response = together_client.chat.completions.create(
-            model=config.TOGETHER_MODEL,
+        response = deepseek_client.chat.completions.create(
+            model=config.DEEPSEEK_MODEL,
             messages=[
                 SYSTEM_MESSAGES,
                 {"role": "user", "content": summary_prompt}
@@ -349,8 +349,8 @@ def summarize_by_topic(history):
         topic_prompt = topic_prompt.format(conversation=conversation_text)
 
         # ส่งไปให้ AI ประมวลผล
-        response = together_client.chat.completions.create(
-            model=config.TOGETHER_MODEL,
+        response = deepseek_client.chat.completions.create(
+            model=config.DEEPSEEK_MODEL,
             messages=[
                 SYSTEM_MESSAGES,
                 {"role": "user", "content": topic_prompt}
@@ -774,7 +774,7 @@ def process_ai_response(user_id, user_message, start_time, animation_success):
         # เพิ่มข้อความของผู้ใช้
         messages.append({"role": "user", "content": user_message})
 
-        # รับการตอบกลับจาก Together พร้อมการจัดการข้อผิดพลาด
+        # รับการตอบกลับจาก DeepSeek พร้อมการจัดการข้อผิดพลาด
         try:
             response = generate_ai_response(messages)
 
@@ -790,12 +790,12 @@ def process_ai_response(user_id, user_message, start_time, animation_success):
 
             # บันทึก log หากมีการทำความสะอาด
             if original_bot_response != bot_response:
-                logging.info(f"ทำความสะอาด response จาก Together AI สำหรับผู้ใช้: {user_id}")
+                logging.info(f"ทำความสะอาด response จาก DeepSeek AI สำหรับผู้ใช้: {user_id}")
 
         except Exception as api_error:
             # จัดการกับข้อผิดพลาดการเรียก API
-            logging.error(f"เกิดข้อผิดพลาดในการเรียก Together API: {str(api_error)}")
-            bot_response = handle_together_api_error(api_error, user_id, user_message)
+            logging.error(f"เกิดข้อผิดพลาดในการเรียก DeepSeek API: {str(api_error)}")
+            bot_response = handle_deepseek_api_error(api_error, user_id, user_message)
 
         # เพิ่มข้อความตอบกลับลงในประวัติการสนทนา
         messages.append({"role": "assistant", "content": bot_response})
@@ -1018,16 +1018,16 @@ def handle_response_timing(start_time, animation_success):
 def generate_ai_response(messages):
     """สร้างการตอบกลับด้วย AI โดยมีการจัดการข้อผิดพลาด"""
     try:
-        response = together_client.chat.completions.create(
-            model=config.TOGETHER_MODEL,
+        response = deepseek_client.chat.completions.create(
+            model=config.DEEPSEEK_MODEL,
             messages=[SYSTEM_MESSAGES] + messages,
             **GENERATION_CONFIG
         )
 
         # ตรวจสอบการตอบกลับเบื้องต้น
         if not response or not hasattr(response, 'choices') or not response.choices:
-            logging.error("ได้รับการตอบกลับที่ไม่ถูกต้องจาก Together API")
-            raise ValueError("Invalid response from Together API")
+            logging.error("ได้รับการตอบกลับที่ไม่ถูกต้องจาก DeepSeek API")
+            raise ValueError("Invalid response from DeepSeek API")
 
         return response
 
@@ -1144,7 +1144,7 @@ def health_check():
             "redis": check_redis_health(),
             "mysql": check_mysql_health(),
             "line_api": check_line_api_health(),
-            "together_api": check_together_api_health()
+            "deepseek_api": check_deepseek_api_health()
         },
         "uptime": get_uptime(),
         "version": "1.0.0",
@@ -1181,18 +1181,18 @@ def check_line_api_health():
     except Exception:
         return False
 
-def check_together_api_health():
-    """ตรวจสอบการเชื่อมต่อ Together API"""
+def check_deepseek_api_health():
+    """ตรวจสอบการเชื่อมต่อ DeepSeek API"""
     try:
         # Make a minimal API call to check connectivity
-        together_client.chat.completions.create(
-            model=config.TOGETHER_MODEL,
+        deepseek_client.chat.completions.create(
+            model=config.DEEPSEEK_MODEL,
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=1
         )
         return True
     except Exception as e:
-        logging.debug(f"Together API health check failed: {str(e)}")
+        logging.debug(f"DeepSeek API health check failed: {str(e)}")
         return False
 
 def get_uptime():
@@ -1353,13 +1353,13 @@ def handle_shutdown(sig=None, frame=None):
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการปิดการเชื่อมต่อ Redis: {str(e)}")
 
-    # ปิดการเชื่อมต่อ Together API
+    # ปิดการเชื่อมต่อ DeepSeek API
     try:
-        if hasattr(async_together, 'client') and async_together.client:
-            asyncio.run(async_together.close())
-        logging.info("ปิดการเชื่อมต่อ Together API เรียบร้อย")
+        if hasattr(async_deepseek, 'client') and async_deepseek.client:
+            asyncio.run(async_deepseek.close())
+        logging.info("ปิดการเชื่อมต่อ DeepSeek API เรียบร้อย")
     except Exception as e:
-        logging.error(f"เกิดข้อผิดพลาดในการปิดการเชื่อมต่อ Together API: {str(e)}")
+        logging.error(f"เกิดข้อผิดพลาดในการปิดการเชื่อมต่อ DeepSeek API: {str(e)}")
 
     logging.info("ปิดแอปพลิเคชันเรียบร้อย")
     exit(0)
