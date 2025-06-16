@@ -65,8 +65,8 @@ if not exist .env (
         echo LINE_CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
         echo LINE_CHANNEL_SECRET=your_line_channel_secret
         echo.
-        echo # Together AI Configuration
-        echo Together_API_KEY=your_Together_api_key
+        echo # DeepSeek API Configuration
+        echo DEEPSEEK_API_KEY=your_deepseek_api_key
         echo.
         echo # Redis Configuration
         echo REDIS_HOST=localhost

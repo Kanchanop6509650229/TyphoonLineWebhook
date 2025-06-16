@@ -98,7 +98,7 @@ def safe_api_call(func: F) -> F:
                 error_msg = str(e)
                 logging.error(f"ข้อผิดพลาดใน {func_name}: {error_msg}")
                 
-                # ตรวจสอบข้อผิดพลาดเฉพาะของ Together API
+                # ตรวจสอบข้อผิดพลาดเฉพาะของ DeepSeek API
                 if "rate limit" in error_msg.lower():
                     last_error = e
                     retry_count += 1
@@ -128,9 +128,9 @@ def safe_api_call(func: F) -> F:
             
     return cast(F, wrapper)
 
-def handle_together_api_error(e, user_id, user_message):
+def handle_deepseek_api_error(e, user_id, user_message):
     """
-    จัดการกับข้อผิดพลาดเฉพาะของ Together API และส่งข้อความที่เหมาะสมไปยังผู้ใช้
+    จัดการกับข้อผิดพลาดเฉพาะของ DeepSeek API และส่งข้อความที่เหมาะสมไปยังผู้ใช้
     
     Args:
         e (Exception): ข้อผิดพลาดที่เกิดขึ้น

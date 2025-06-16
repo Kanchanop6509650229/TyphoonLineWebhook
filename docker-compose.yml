@@ -11,7 +11,7 @@ services:
       - MYSQL_HOST=db
       - MYSQL_PORT=3306
       - TZ=Asia/Bangkok
-      - TOGETHER_MODEL=${TOGETHER_MODEL:-scb10x/scb10x-typhoon-2-1-gemma3-12b}
+      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
     env_file: .env
     depends_on:
       - redis

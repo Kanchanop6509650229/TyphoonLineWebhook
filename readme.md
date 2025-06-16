@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guidance for individuals dealing with substance abuse issues. The chatbot leverages the Together AI model to deliver empathetic, non-judgmental responses in Thai language.
+TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guidance for individuals dealing with substance abuse issues. The chatbot leverages the DeepSeek model to deliver empathetic, non-judgmental responses in Thai language.
 
 ## 🌟 Features
 
@@ -19,7 +19,7 @@ TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guida
 - MySQL 8.0+
 - Redis 6+
 - LINE Messaging API credentials
-- Together AI API key
+- DeepSeek API key
 
 ## 🚀 Installation
 
@@ -40,7 +40,7 @@ TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guida
    ```
    LINE_CHANNEL_ACCESS_TOKEN=your_line_token
    LINE_CHANNEL_SECRET=your_line_secret
-   Together_API_KEY=your_Together_api_key
+   DEEPSEEK_API_KEY=your_deepseek_api_key
    ```
 
 4. Build and start the containers:
@@ -76,7 +76,7 @@ TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guida
 |----------|-------------|---------|
 | `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API access token | - |
 | `LINE_CHANNEL_SECRET` | LINE channel secret | - |
-| `Together_API_KEY` | Together AI API key | - |
+| `DEEPSEEK_API_KEY` | DeepSeek API key | - |
 | `REDIS_HOST` | Redis host | localhost |
 | `REDIS_PORT` | Redis port | 6379 |
 | `MYSQL_HOST` | MySQL host | localhost |
@@ -105,7 +105,7 @@ The application follows a modular architecture with these key components:
                         │
                         ▼
 ┌────────────┐    ┌─────────────┐    ┌─────────────┐
-│ Together AI│◄───┤ App Server  ├───►│    Redis    │
+│ DeepSeek   │◄───┤ App Server  ├───►│    Redis    │
 └────────────┘    └─────┬───────┘    └─────────────┘
                         │
                         ▼
@@ -117,7 +117,7 @@ The application follows a modular architecture with these key components:
 ### Key Components
 
 - **app_main.py**: Main application handling LINE webhook events
-- **async_api.py**: Asynchronous client for Together AI interactions
+- **async_api.py**: Asynchronous client for DeepSeek interactions
 - **chat_history_db.py**: Database operations for conversation history
 - **token_counter.py**: Token counting for API usage monitoring
 - **middleware/rate_limiter.py**: Rate limiting implementation
@@ -201,5 +201,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 🙏 Acknowledgements
 
 - [LINE Messaging API](https://developers.line.biz/en/docs/messaging-api/)
-- [Together AI](https://www.together.ai/) for providing the chat model
+- [DeepSeek](https://platform.deepseek.com/) for providing the chat model
 - [Flask](https://flask.palletsprojects.com/) web framework
