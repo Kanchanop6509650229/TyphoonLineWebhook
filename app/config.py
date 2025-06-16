@@ -139,8 +139,6 @@ GENERATION_CONFIG = {
     "temperature": 0.7,
     "max_tokens": 3000,
     "top_p": 0.9,
-    "top_k": 40,
-    "repetition_penalty": 1
 }
 
 # คอนฟิกการสร้างข้อความสรุป
@@ -148,8 +146,6 @@ SUMMARY_GENERATION_CONFIG = {
     "temperature": 0.3,
     "max_tokens": 5000,
     "top_p": 0.5, 
-    "top_k": 30,
-    "repetition_penalty": 1.2, 
 }
 
 # ค่า token threshold สำหรับจัดการประวัติการสนทนา
