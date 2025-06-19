@@ -484,6 +484,19 @@ def schedule_follow_up(user_id, interaction_date=None):
         # บันทึกข้อมูลวันที่เริ่มต้นลงใน Redis (ถ้ายังไม่มี)
         redis_client.setnx(f"first_interaction:{user_id}", interaction_date.timestamp())
 
+        # ถ้ามีการกำหนดการติดตามไว้แล้วและยังไม่ถึงกำหนด ให้ใช้อันเดิม
+        existing_ts = redis_client.zscore('follow_up_queue', user_id)
+        if existing_ts:
+            try:
+                existing_dt = datetime.fromtimestamp(float(existing_ts))
+                if existing_dt > datetime.now():
+                    logging.info(
+                        f"มีการกำหนดการติดตามไว้แล้วสำหรับผู้ใช้ {user_id} ในวันที่ {existing_dt.strftime('%Y-%m-%d')}"
+                    )
+                    return
+            except (ValueError, TypeError) as e:
+                logging.warning(f"ข้อมูลกำหนดการติดตามไม่ถูกต้อง: {str(e)}")
+
         # ดึงข้อมูลการติดตามล่าสุด (ถ้ามี)
         last_follow_up = redis_client.get(f"last_follow_up:{user_id}")
         next_follow_idx = 0
@@ -711,8 +724,9 @@ def process_conversation_data(user_id, user_message, bot_response, messages):
         important=is_important
     )
 
-    # กำหนดการติดตาม
-    schedule_follow_up(user_id, datetime.now())
+    # กำหนดการติดตามโดยยึดวันแรกที่ผู้ใช้เริ่มสนทนา
+    # ถ้ามีการกำหนดการติดตามค้างอยู่จะไม่ถูกปรับใหม่
+    schedule_follow_up(user_id, None)
 
     # ส่งการแจ้งเตือนถ้าพบความเสี่ยงสูง
     if risk_level == 'high':
