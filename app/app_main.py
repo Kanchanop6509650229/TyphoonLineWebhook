@@ -126,7 +126,7 @@ except Exception as e:
 limiter = init_limiter(app)
 
 # ค่าคงที่ส่วนของการแอพลิเคชัน
-FOLLOW_UP_INTERVALS = [1, 3, 7, 14, 30]  # จำนวนวันในการติดตาม
+FOLLOW_UP_INTERVALS = [1, 3, 7, 14, 30]  # จำนวนวันในการติดตาม (ค่าเริ่มต้น)
 SESSION_TIMEOUT = 604800  # 7 วัน (7 * 24 * 60 * 60 วินาที)
 MESSAGE_LOCK_TIMEOUT = 30  # ระยะเวลาล็อค (วินาที)
 PROCESSING_MESSAGES = [
@@ -423,6 +423,39 @@ def unlock_user(user_id):
     """ปลดล็อคผู้ใช้"""
     redis_client.delete(f"message_lock:{user_id}")
 
+# ----- ฟังก์ชันสำหรับการจัดการตารางติดตามผล -----
+def get_user_follow_up_intervals(user_id):
+    """ดึงช่วงเวลาติดตามของผู้ใช้ หากไม่มีให้ใช้ค่าเริ่มต้น"""
+    custom = redis_client.get(f"followup_intervals:{user_id}")
+    if custom:
+        try:
+            return [int(x) for x in custom.split(',') if x]
+        except Exception:
+            logging.warning(f"รูปแบบช่วงเวลาติดตามของผู้ใช้ {user_id} ไม่ถูกต้อง")
+    return FOLLOW_UP_INTERVALS
+
+
+def set_user_follow_up_intervals(user_id, intervals):
+    """กำหนดช่วงเวลาติดตามใหม่และสร้างตารางตามนั้น"""
+    try:
+        valid = sorted({int(d) for d in intervals if int(d) > 0})
+    except Exception:
+        return False
+
+    if not valid:
+        return False
+
+    redis_client.set(f"followup_intervals:{user_id}", ','.join(str(d) for d in valid))
+    clear_follow_up_schedule(user_id)
+    schedule_follow_up(user_id, None)
+    return True
+
+
+def clear_follow_up_schedule(user_id):
+    """ลบการติดตามและข้อมูลที่เกี่ยวข้อง"""
+    redis_client.zrem('follow_up_queue', user_id)
+    redis_client.delete(f"last_follow_up:{user_id}")
+
 # ฟังก์ชันเกี่ยวกับการติดตามผู้ใช้
 def schedule_follow_up(user_id, interaction_date=None):
     """
@@ -484,6 +517,7 @@ def schedule_follow_up(user_id, interaction_date=None):
         # บันทึกข้อมูลวันที่เริ่มต้นลงใน Redis (ถ้ายังไม่มี)
         redis_client.setnx(f"first_interaction:{user_id}", interaction_date.timestamp())
 
+        intervals = get_user_follow_up_intervals(user_id)
         # ดึงข้อมูลการติดตามล่าสุด (ถ้ามี)
         last_follow_up = redis_client.get(f"last_follow_up:{user_id}")
         next_follow_idx = 0
@@ -493,15 +527,15 @@ def schedule_follow_up(user_id, interaction_date=None):
             if isinstance(last_follow_up, bytes):
                 last_follow_up = last_follow_up.decode('utf-8')
 
-            # หาดัชนีถัดไปใน FOLLOW_UP_INTERVALS
+            # หาดัชนีถัดไปในช่วงเวลาที่กำหนด
             try:
-                last_idx = FOLLOW_UP_INTERVALS.index(int(last_follow_up))
+                last_idx = intervals.index(int(last_follow_up))
                 next_follow_idx = last_idx + 1
                 # ถ้าเกินขอบเขต ให้ใช้วันสุดท้าย
-                if next_follow_idx >= len(FOLLOW_UP_INTERVALS):
-                    next_follow_idx = len(FOLLOW_UP_INTERVALS) - 1
+                if next_follow_idx >= len(intervals):
+                    next_follow_idx = len(intervals) - 1
             except (ValueError, IndexError):
-                # ถ้าไม่พบค่าใน FOLLOW_UP_INTERVALS หรือเกิดข้อผิดพลาด ให้เริ่มจาก 0
+                # ถ้าไม่พบค่าในช่วงเวลาหรือเกิดข้อผิดพลาด ให้เริ่มจาก 0
                 next_follow_idx = 0
 
         # กำหนดการติดตามตามช่วงเวลาที่กำหนด
@@ -509,8 +543,8 @@ def schedule_follow_up(user_id, interaction_date=None):
         scheduled = False
 
         # ลูปเริ่มจากดัชนีที่คำนวณได้ (ไม่ใช่ตั้งแต่ดัชนี 0 เสมอ)
-        for i in range(next_follow_idx, len(FOLLOW_UP_INTERVALS)):
-            days = FOLLOW_UP_INTERVALS[i]
+        for i in range(next_follow_idx, len(intervals)):
+            days = intervals[i]
             follow_up_date = interaction_date + timedelta(days=days)
 
             # กำหนดการติดตามสำหรับวันที่ในอนาคตเท่านั้น
@@ -898,6 +932,9 @@ def handle_command_with_processing(user_id, command):
         db.clear_user_history(user_id)
         redis_client.delete(f"chat_session:{user_id}")
         redis_client.delete(f"session_tokens:{user_id}")
+        clear_follow_up_schedule(user_id)
+        redis_client.delete(f"followup_intervals:{user_id}")
+        redis_client.delete(f"first_interaction:{user_id}")
         response_text = (
             "🔄 ล้างประวัติการสนทนาเรียบร้อยแล้วค่ะ\n\n"
             "เราสามารถเริ่มต้นการสนทนาใหม่ได้ทันที\n"
@@ -931,6 +968,28 @@ def handle_command_with_processing(user_id, command):
             f"{'⚠️ ใกล้ถึงขีดจำกัด โปรดใช้ /optimize เพื่อปรับปรุงประวัติ' if percentage > 80 else '✅ อยู่ในเกณฑ์ปกติ'}"
         )
 
+    elif command.startswith('/setfollowup'):
+        parts = command.split(None, 1)
+        if len(parts) == 2 and parts[1].strip():
+            day_tokens = [x.strip() for x in parts[1].split(',')]
+            try:
+                days = [int(x) for x in day_tokens if x]
+            except ValueError:
+                response_text = "รูปแบบไม่ถูกต้อง โปรดใส่ตัวเลขคั่นด้วยคอมม่า เช่น /setfollowup 1,3,7"
+            else:
+                if set_user_follow_up_intervals(user_id, days):
+                    unique_days = ', '.join(str(d) for d in sorted({int(x) for x in days}))
+                    response_text = f"✅ กำหนดวันติดตามใหม่: {unique_days} วันแล้ว"
+                else:
+                    response_text = "กรุณาใส่ตัวเลขอย่างน้อยหนึ่งค่า เช่น /setfollowup 1,3,7"
+        else:
+            response_text = "โปรดระบุวันติดตาม เช่น /setfollowup 1,3,7"
+
+    elif command == '/cancelfollowup':
+        clear_follow_up_schedule(user_id)
+        redis_client.delete(f"followup_intervals:{user_id}")
+        response_text = "❌ ยกเลิกการติดตามทั้งหมดแล้ว"
+
     elif command == '/followup':
         info = get_time_until_next_follow_up(user_id)
         if info:
@@ -958,6 +1017,8 @@ def handle_command_with_processing(user_id, command):
             "📈 /progress - ดูรายงานความก้าวหน้าของคุณ\n"
             "🔄 /optimize - ปรับปรุงประวัติการสนทนาให้มีประสิทธิภาพ\n"
             "📈 /tokens - ตรวจสอบการใช้งานโทเค็นในเซสชันปัจจุบัน\n"
+            "🗓 /setfollowup [วัน] - กำหนดวันติดตามด้วยตัวเอง\n"
+            "❌ /cancelfollowup - ยกเลิกการติดตามทั้งหมด\n"
             "⏰ /followup - ตรวจสอบเวลาติดตามครั้งถัดไป\n"
             "🚨 /emergency - ดูข้อมูลติดต่อฉุกเฉินและสายด่วน\n"
             "🔄 /reset - ล้างประวัติการสนทนาและเริ่มต้นใหม่\n"
