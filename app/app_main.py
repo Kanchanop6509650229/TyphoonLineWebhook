@@ -991,16 +991,22 @@ def handle_command_with_processing(user_id, command):
         response_text = "❌ ยกเลิกการติดตามทั้งหมดแล้ว"
 
     elif command == '/followup':
+        intervals = get_user_follow_up_intervals(user_id)
         info = get_time_until_next_follow_up(user_id)
+        interval_text = ', '.join(str(d) for d in sorted(set(intervals)))
         if info:
             follow_date, days, hours, minutes = info
             response_text = (
                 "⏰ การติดตามครั้งถัดไป\n\n"
                 f"กำหนดไว้วันที่ {follow_date.strftime('%Y-%m-%d %H:%M')}\n"
-                f"เหลือเวลาอีก {days} วัน {hours} ชั่วโมง {minutes} นาที"
+                f"เหลือเวลาอีก {days} วัน {hours} ชั่วโมง {minutes} นาที\n"
+                f"วันติดตามที่ตั้งไว้: {interval_text} วัน"
             )
         else:
-            response_text = "ยังไม่มีการกำหนดการติดตามครั้งถัดไปหรือกำหนดการอาจถึงเวลาแล้ว"
+            response_text = (
+                "ยังไม่มีการกำหนดการติดตามครั้งถัดไปหรือกำหนดการอาจถึงเวลาแล้ว\n"
+                f"วันติดตามที่ตั้งไว้: {interval_text} วัน"
+            )
 
     elif command == '/help':
         response_text = (
