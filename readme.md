@@ -180,12 +180,13 @@ Logs are stored in the `logs/` directory and rotated automatically when they rea
 
 | Command | Description |
 |---------|-------------|
-| `/reset` | Reset conversation history |
+| `/reset` | Reset conversation history and follow-up schedule |
 | `/help` | Display help information |
 | `/status` | Show usage statistics |
 | `/emergency` | Display emergency contacts |
 | `/feedback` | Provide feedback |
 | `/progress` | View progress report |
+| `/followup` | Show next follow-up schedule |
 
 ### Monitoring
 
