@@ -188,7 +188,7 @@ Logs are stored in the `logs/` directory and rotated automatically when they rea
 | `/progress` | View progress report |
 | `/setfollowup` | Set custom follow-up days |
 | `/cancelfollowup` | Cancel all follow-ups |
-| `/followup` | Show time until next follow-up and configured days |
+| `/followup` | Show time until next follow-up |
 
 ### Monitoring
 
