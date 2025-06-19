@@ -538,6 +538,7 @@ def get_follow_up_status(user_id):
         timestamp = redis_client.zscore('follow_up_queue', user_id)
         if timestamp:
             next_dt = datetime.fromtimestamp(float(timestamp))
+            date_text = next_dt.strftime("%d/%m/%Y %H:%M")
             delta = next_dt - datetime.now()
             if delta.total_seconds() < 0:
                 delta = timedelta(0)
@@ -547,6 +548,7 @@ def get_follow_up_status(user_id):
             time_text = f"อีก {days} วัน {hours} ชั่วโมง {minutes} นาที"
         else:
             time_text = "ยังไม่ได้กำหนดการติดตามครั้งถัดไป"
+            date_text = "-"
 
         last_follow = redis_client.get(f"last_follow_up:{user_id}")
         start_idx = 0
@@ -559,6 +561,7 @@ def get_follow_up_status(user_id):
         remaining_text = ",".join(str(d) for d in remaining) if remaining else "หมดแล้ว"
 
         return (
+            f"📆 กำหนดการติดตามครั้งถัดไป: {date_text}\n"
             f"⏰ การติดตามครั้งถัดไปจะเริ่มใน {time_text}\n"
             f"📅 รอบติดตามที่เหลือ: {remaining_text}"
         )
