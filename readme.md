@@ -186,7 +186,7 @@ Logs are stored in the `logs/` directory and rotated automatically when they rea
 | `/emergency` | Display emergency contacts |
 | `/feedback` | Provide feedback |
 | `/progress` | View progress report |
-| `/followup` | Show next follow-up schedule |
+| `/followup` | Show next follow-up date and remaining schedule |
 
 ### Monitoring
 
