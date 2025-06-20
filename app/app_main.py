@@ -10,6 +10,7 @@ import requests
 import time
 import threading
 import asyncio
+import re
 from datetime import datetime, timedelta
 from flask import Flask, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
@@ -640,12 +641,21 @@ def send_processing_status(user_id, reply_token):
         return False
 
 def send_final_response(user_id, bot_response):
-    """ส่งคำตอบสุดท้ายหลังประมวลผลเสร็จ"""
+    """ส่งคำตอบสุดท้ายหลังประมวลผลเสร็จ
+
+    แบ่งคำตอบออกเป็นหลายข้อความเมื่อมีสัญลักษณ์หัวข้อหรือบรรทัดว่างสองบรรทัด
+    เพื่อให้แต่ละหัวข้อแสดงเป็นบับเบิลแยกบน LINE
+    """
     try:
-        line_bot_api.push_message(
-            user_id,
-            TextSendMessage(text=bot_response)
-        )
+        # แยกข้อความด้วยตัวแบ่งหัวข้อ (•) หรือบรรทัดว่างอย่างน้อย 2 บรรทัด
+        segments = [
+            seg.strip() for seg in re.split(r"\n{2,}|•", bot_response) if seg.strip()
+        ]
+        # สร้างข้อความแต่ละบับเบิลสำหรับส่งไปยังผู้ใช้
+        messages = [TextSendMessage(text=segment) for segment in segments]
+
+        if messages:
+            line_bot_api.push_message(user_id, messages)
         return True
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการส่งคำตอบสุดท้าย: {str(e)}")
