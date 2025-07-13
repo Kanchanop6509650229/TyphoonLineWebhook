@@ -645,17 +645,33 @@ def send_final_response(user_id, bot_response):
 
     แบ่งคำตอบออกเป็นหลายข้อความเมื่อมีสัญลักษณ์หัวข้อหรือบรรทัดว่างสองบรรทัด
     เพื่อให้แต่ละหัวข้อแสดงเป็นบับเบิลแยกบน LINE
+    หากมีมากกว่า 5 ข้อความ จะส่งเป็นหลายครั้ง
     """
     try:
         # แยกข้อความด้วยตัวแบ่งหัวข้อ (•) หรือบรรทัดว่างอย่างน้อย 2 บรรทัด
         segments = [
             seg.strip() for seg in re.split(r"\n{2,}|•", bot_response) if seg.strip()
         ]
-        # สร้างข้อความแต่ละบับเบิลสำหรับส่งไปยังผู้ใช้
-        messages = [TextSendMessage(text=segment) for segment in segments]
-
-        if messages:
+        
+        # ตรวจสอบจำนวน segments
+        if not segments:
+            # ถ้าไม่มี segments ให้ส่งข้อความเดิม
+            messages = [TextSendMessage(text=bot_response)]
             line_bot_api.push_message(user_id, messages)
+        elif len(segments) <= 5:
+            # จำนวน segments อยู่ในขอบเขตที่อนุญาต (1-5)
+            messages = [TextSendMessage(text=segment) for segment in segments]
+            line_bot_api.push_message(user_id, messages)
+        else:
+            # ถ้าเกิน 5 segments ให้แบ่งส่งเป็นหลายครั้ง
+            for i in range(0, len(segments), 5):
+                batch = segments[i:i+5]
+                messages = [TextSendMessage(text=segment) for segment in batch]
+                line_bot_api.push_message(user_id, messages)
+                # หน่วงเวลาเล็กน้อยระหว่างการส่งแต่ละครั้ง เพื่อไม่ให้ส่งพร้อมกัน
+                if i + 5 < len(segments):
+                    time.sleep(0.5)
+        
         return True
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการส่งคำตอบสุดท้าย: {str(e)}")
