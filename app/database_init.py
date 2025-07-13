@@ -55,6 +55,12 @@ class DatabaseInitializer:
                 self._create_registration_codes_table()
                 logging.info("สร้างตาราง registration_codes สำเร็จ")
 
+            # ตรวจสอบและสร้างตาราง user_risk_assessments
+            if not self.db.table_exists('user_risk_assessments'):
+                logging.info("ไม่พบตาราง user_risk_assessments กำลังสร้าง...")
+                self._create_user_risk_assessments_table()
+                logging.info("สร้างตาราง user_risk_assessments สำเร็จ")
+
             logging.info("การเริ่มต้นฐานข้อมูลสำเร็จ")
             return True
 
@@ -127,6 +133,28 @@ class DatabaseInitializer:
                 form_data JSON,
                 INDEX idx_user_id (user_id),
                 INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """
+        self.db.execute_and_commit(query)
+
+    def _create_user_risk_assessments_table(self) -> None:
+        """สร้างตาราง user_risk_assessments สำหรับเก็บข้อมูลความเสี่ยงจาก Google Form"""
+        query = """
+            CREATE TABLE user_risk_assessments (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id VARCHAR(50) NOT NULL,
+                registration_code VARCHAR(10) NOT NULL,
+                form_data JSON NOT NULL,
+                assist_scores JSON,
+                risk_summary TEXT,
+                screening_results JSON,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_user_assessment (user_id),
+                FOREIGN KEY (registration_code) REFERENCES registration_codes(code) ON DELETE CASCADE,
+                INDEX idx_user_id (user_id),
+                INDEX idx_registration_code (registration_code),
+                INDEX idx_created_at (created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         """
         self.db.execute_and_commit(query)

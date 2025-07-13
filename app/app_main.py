@@ -27,7 +27,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # นำเข้าโมดูลภายในโปรเจค
 from .middleware.rate_limiter import init_limiter
 from .config import load_config, SYSTEM_MESSAGES, GENERATION_CONFIG, SUMMARY_GENERATION_CONFIG, TOKEN_THRESHOLD
-from .utils import safe_db_operation, safe_api_call, clean_ai_response, handle_deepseek_api_error, check_hospital_inquiry, get_hospital_information_message
+from .utils import safe_db_operation, safe_api_call, clean_ai_response, handle_deepseek_api_error, check_hospital_inquiry, get_hospital_information_message, get_user_risk_context
 from .chat_history_db import ChatHistoryDB
 from .token_counter import TokenCounter
 from .session_manager import (
@@ -377,24 +377,121 @@ def is_user_registered(user_id):
         logging.error(f"Error checking user registration: {str(e)}")
         return False
 
+def generate_risk_summary(assist_scores, screening_results):
+    """สร้างสรุปความเสี่ยงจากข้อมูล ASSIST และการคัดกรอง"""
+    try:
+        summary_parts = []
+        
+        # สรุปคะแนน ASSIST
+        if assist_scores:
+            summary_parts.append("คะแนน ASSIST:")
+            for substance, score in assist_scores.items():
+                if isinstance(score, (int, float)) and score > 0:
+                    risk_level = get_risk_level_from_score(substance, score)
+                    summary_parts.append(f"- {substance}: {score} คะแนน ({risk_level})")
+        
+        # สรุปผลการคัดกรอง
+        if screening_results:
+            summary_parts.append("\nผลการคัดกรอง:")
+            for criteria, result in screening_results.items():
+                summary_parts.append(f"- {criteria}: {result}")
+        
+        return "\n".join(summary_parts) if summary_parts else "ไม่มีข้อมูลความเสี่ยง"
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการสร้างสรุปความเสี่ยง: {str(e)}")
+        return "ไม่สามารถสร้างสรุปความเสี่ยงได้"
+
+def get_risk_level_from_score(substance, score):
+    """แปลคะแนน ASSIST เป็นระดับความเสี่ยง"""
+    if substance == 'เครื่องดื่มแอลกอฮอล์':
+        if score <= 10:
+            return 'ความเสี่ยงต่ำ'
+        elif score <= 26:
+            return 'ความเสี่ยงปานกลาง'
+        else:
+            return 'ความเสี่ยงสูง'
+    else:
+        if score <= 3:
+            return 'ความเสี่ยงต่ำ'
+        elif score <= 26:
+            return 'ความเสี่ยงปานกลาง'
+        else:
+            return 'ความเสี่ยงสูง'
+
 def register_user_with_code(user_id, code):
     """ยืนยันการลงทะเบียนด้วยรหัสยืนยัน"""
     try:
         # ตรวจสอบว่ารหัสมีอยู่และยังไม่หมดอายุ
-        query = 'SELECT code FROM registration_codes WHERE code = %s AND status = %s'
+        query = 'SELECT code, form_data FROM registration_codes WHERE code = %s AND status = %s'
         result = db_manager.execute_query(query, (code, 'pending'))
 
         if not result:
             return False, "รหัสยืนยันไม่ถูกต้องหรือหมดอายุแล้ว"
 
+        form_data = result[0][1] if len(result[0]) > 1 else None
+
         # อัพเดทรหัสให้เชื่อมกับผู้ใช้และสถานะเป็น verified
         update_query = 'UPDATE registration_codes SET user_id = %s, status = %s, verified_at = %s WHERE code = %s'
         db_manager.execute_and_commit(update_query, (user_id, 'verified', datetime.now(), code))
+
+        # บันทึกข้อมูลความเสี่ยงลงตาราง user_risk_assessments (ถ้ามีข้อมูลฟอร์ม)
+        if form_data:
+            save_user_risk_assessment(user_id, code, form_data)
 
         return True, "ลงทะเบียนเรียบร้อยแล้ว! คุณสามารถใช้งานแชทบอทได้ทันที"
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการลงทะเบียน: {str(e)}")
         return False, "เกิดข้อผิดพลาดในการลงทะเบียน กรุณาลองอีกครั้ง"
+
+def save_user_risk_assessment(user_id, registration_code, form_data):
+    """บันทึกข้อมูลความเสี่ยงของผู้ใช้"""
+    try:
+        # แปลงข้อมูลฟอร์มจาก JSON string เป็น dict (ถ้าจำเป็น)
+        if isinstance(form_data, str):
+            form_data = json.loads(form_data)
+        
+        # สร้างสรุปความเสี่ยงจากข้อมูลฟอร์ม
+        risk_summary = extract_risk_summary_from_form(form_data)
+        
+        # บันทึกลงฐานข้อมูล
+        insert_query = '''
+            INSERT INTO user_risk_assessments 
+            (user_id, registration_code, form_data, risk_summary)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+            form_data = VALUES(form_data),
+            risk_summary = VALUES(risk_summary),
+            updated_at = CURRENT_TIMESTAMP
+        '''
+        
+        db_manager.execute_and_commit(insert_query, (
+            user_id,
+            registration_code,
+            json.dumps(form_data, ensure_ascii=False),
+            risk_summary
+        ))
+        
+        logging.info(f"บันทึกข้อมูลความเสี่ยงสำหรับผู้ใช้ {user_id} เรียบร้อย")
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการบันทึกข้อมูลความเสี่ยง: {str(e)}")
+
+def extract_risk_summary_from_form(form_data):
+    """สกัดสรุปความเสี่ยงจากข้อมูลฟอร์ม"""
+    try:
+        summary_parts = []
+        
+        # ดึงข้อมูลสำคัญจากฟอร์ม
+        for key, value in form_data.items():
+            if any(keyword in key.lower() for keyword in ['assist', 'คะแนน', 'ความเสี่ยง', 'สาร', 'ยา']):
+                summary_parts.append(f"{key}: {value}")
+        
+        return "\n".join(summary_parts) if summary_parts else "ไม่มีข้อมูลความเสี่ยงเฉพาะ"
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการสกัดสรุปความเสี่ยง: {str(e)}")
+        return "ไม่สามารถสกัดข้อมูลความเสี่ยงได้"
 
 def send_registration_message(user_id):
     """ส่งข้อความแนะนำการลงทะเบียน"""
@@ -855,6 +952,13 @@ def process_ai_response(user_id, user_message, start_time, animation_success):
             optimized_history = db.get_user_history(user_id, max_tokens=10000)
             prepare_conversation_context(messages, optimized_history)
 
+        # เพิ่มบริบทความเสี่ยงของผู้ใช้ (ถ้ามี)
+        risk_context = get_user_risk_context(user_id, db)
+        if risk_context:
+            # เพิ่มข้อมูลความเสี่ยงเป็นบริบทสำหรับ AI
+            messages.append({"role": "system", "content": f"ข้อมูลประเมินความเสี่ยงของผู้ใช้:\n{risk_context}"})
+            logging.info(f"เพิ่มบริบทความเสี่ยงสำหรับผู้ใช้ {user_id}")
+
         # เพิ่มข้อความของผู้ใช้
         messages.append({"role": "user", "content": user_message})
 
@@ -1147,19 +1251,24 @@ def callback():
 @app.route("/api/add-verification-code", methods=['POST'])
 @limiter.exempt
 def add_verification_code():
-    """API endpoint รับรหัสยืนยันจาก Google Apps Script"""
+    """API endpoint รับรหัสยืนยันและข้อมูลความเสี่ยงจาก Google Apps Script"""
 
     # ตรวจสอบการรับรอง API key
     api_key = request.json.get('api_key', '')
     if api_key != os.getenv('FORM_WEBHOOK_KEY', 'your_secret_key_here'):
         return jsonify({"success": False, "error": "Unauthorized"}), 401
 
-    # รับรหัสยืนยันจาก request
+    # รับข้อมูลจาก request
     code = request.json.get('code', '')
-    if not code or not code.isdigit() or len(code) != 6:
-        return jsonify({"success": False, "error": "Invalid verification code"}), 400
+    form_data = request.json.get('form_data', {})
+    assist_scores = request.json.get('assist_scores', {})
+    screening_results = request.json.get('screening_results', {})
+    
+    # ตรวจสอบรหัสยืนยัน
+    if not code:
+        return jsonify({"success": False, "error": "Missing verification code"}), 400
 
-    # บันทึกรหัสลงฐานข้อมูล
+    # บันทึกรหัสและข้อมูลลงฐานข้อมูล
     try:
         # ตรวจสอบว่ารหัสมีอยู่แล้วหรือไม่
         check_query = 'SELECT code FROM registration_codes WHERE code = %s'
@@ -1168,12 +1277,30 @@ def add_verification_code():
         if result and result[0]:
             return jsonify({"success": False, "error": "Code already exists"}), 409
 
-        # บันทึกรหัสใหม่
-        insert_query = 'INSERT INTO registration_codes (code, created_at, status) VALUES (%s, %s, %s)'
-        db_manager.execute_and_commit(insert_query, (code, datetime.now(), 'pending'))
+        # บันทึกรหัสใหม่พร้อมข้อมูลฟอร์ม
+        insert_query = '''
+            INSERT INTO registration_codes (code, created_at, status, form_data) 
+            VALUES (%s, %s, %s, %s)
+        '''
+        db_manager.execute_and_commit(insert_query, (
+            code, 
+            datetime.now(), 
+            'pending',
+            json.dumps(form_data, ensure_ascii=False) if form_data else None
+        ))
 
         logging.info(f"บันทึกรหัสยืนยันใหม่: {code}")
-        return jsonify({"success": True, "message": "Verification code added successfully"}), 201
+        
+        # ถ้ามีข้อมูล ASSIST scores และ screening results ให้สร้างสรุปความเสี่ยง
+        if assist_scores or screening_results:
+            risk_summary = generate_risk_summary(assist_scores, screening_results)
+            logging.info(f"สร้างสรุปความเสี่ยงสำหรับรหัส {code}: {risk_summary}")
+        
+        return jsonify({
+            "success": True, 
+            "message": "Verification code and risk data added successfully",
+            "code": code
+        }), 201
 
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการบันทึกรหัสยืนยัน: {str(e)}")

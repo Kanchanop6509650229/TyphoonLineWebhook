@@ -381,3 +381,187 @@ def get_hospital_information_message():
         "• สามารถสอบถามบริการรักษายาเสพติดได้\n\n"
         "💡 เจ้าหน้าที่จะแนะนำสถานพยาบาลที่ใกล้บ้านคุณที่สุด และมีบริการที่เหมาะสมกับความต้องการของคุณ"
     )
+
+def get_user_risk_context(user_id, db_manager):
+    """ดึงข้อมูลความเสี่ยงของผู้ใช้เพื่อใช้เป็นบริบทในการสนทนา (ใช้ข้อมูลสรุปเพื่อประสิทธิภาพ)"""
+    try:
+        query = '''
+            SELECT risk_summary, assist_scores, created_at
+            FROM user_risk_assessments 
+            WHERE user_id = %s
+            ORDER BY created_at DESC 
+            LIMIT 1
+        '''
+        result = db_manager.execute_query(query, (user_id,))
+        
+        if not result:
+            return None
+            
+        risk_summary, assist_scores, created_at = result[0]
+        
+        # ใช้ข้อมูลสรุปที่กระชับแทนข้อมูลเต็ม
+        context_summary = create_summarized_ai_context(
+            risk_summary, assist_scores, created_at
+        )
+        
+        return context_summary
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการดึงข้อมูลความเสี่ยง: {str(e)}")
+        return None
+
+def create_summarized_ai_context(risk_summary, assist_scores, created_at):
+    """สร้างบริบทสรุปที่กระชับสำหรับ AI"""
+    try:
+        context_parts = []
+        
+        # เพิ่มข้อมูลพื้นฐาน
+        if created_at:
+            context_parts.append(f"ประเมินความเสี่ยง: {created_at.strftime('%Y-%m-%d')}")
+        
+        # เพิ่มสรุปความเสี่ยงที่มีอยู่แล้ว
+        if risk_summary:
+            context_parts.append(f"สรุป: {risk_summary}")
+        
+        # เพิ่มข้อมูล ASSIST scores แบบกระชับ
+        if assist_scores:
+            try:
+                import json
+                if isinstance(assist_scores, str):
+                    assist_scores = json.loads(assist_scores)
+                
+                high_risk_substances = []
+                for substance, score in assist_scores.items():
+                    if score > 10:  # เฉพาะความเสี่ยงสูง
+                        risk_level = get_risk_level_from_score_util(substance, score)
+                        if 'สูง' in risk_level:
+                            high_risk_substances.append(f"{substance}({score})")
+                
+                if high_risk_substances:
+                    context_parts.append(f"ความเสี่ยงสูง: {', '.join(high_risk_substances)}")
+                    
+            except Exception as e:
+                logging.warning(f"ไม่สามารถแปลงข้อมูล ASSIST scores: {str(e)}")
+        
+        # คำแนะนำสำหรับ AI แบบกระชับ
+        context_parts.append("[ใช้ข้อมูลนี้ปรับระดับการดูแลให้เหมาะสม]")
+        
+        return "\n".join(context_parts) if context_parts else None
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการสร้างบริบทสรุป: {str(e)}")
+        return None
+
+def create_ai_context_from_risk_data(form_data, risk_summary, assist_scores, screening_results, created_at):
+    """สร้างบริบทที่เหมาะสมสำหรับ AI จากข้อมูลความเสี่ยง"""
+    try:
+        context_parts = []
+        
+        # เพิ่มข้อมูลพื้นฐาน
+        if created_at:
+            context_parts.append(f"ข้อมูลการประเมินความเสี่ยง (วันที่: {created_at.strftime('%Y-%m-%d')})")
+        
+        # เพิ่มสรุปความเสี่ยง
+        if risk_summary:
+            context_parts.append(f"สรุปความเสี่ยง: {risk_summary}")
+        
+        # เพิ่มข้อมูล ASSIST scores ถ้ามี
+        if assist_scores:
+            try:
+                import json
+                if isinstance(assist_scores, str):
+                    assist_scores = json.loads(assist_scores)
+                
+                context_parts.append("คะแนน ASSIST:")
+                for substance, score in assist_scores.items():
+                    if score > 0:
+                        risk_level = get_risk_level_from_score_util(substance, score)
+                        context_parts.append(f"- {substance}: {score} คะแนน ({risk_level})")
+            except Exception as e:
+                logging.warning(f"ไม่สามารถแปลงข้อมูล ASSIST scores: {str(e)}")
+        
+        # เพิ่มข้อมูลการคัดกรองถ้ามี
+        if screening_results:
+            try:
+                import json
+                if isinstance(screening_results, str):
+                    screening_results = json.loads(screening_results)
+                
+                context_parts.append("ผลการคัดกรอง:")
+                for criteria, result in screening_results.items():
+                    context_parts.append(f"- {criteria}: {result}")
+            except Exception as e:
+                logging.warning(f"ไม่สามารถแปลงข้อมูลการคัดกรอง: {str(e)}")
+        
+        # สร้างคำแนะนำสำหรับ AI
+        context_parts.append("\n[คำแนะนำสำหรับการสนทนา: ใช้ข้อมูลนี้เป็นบริบทในการให้คำปรึกษาและการดูแลที่เหมาะสมกับระดับความเสี่ยงของผู้ใช้]")
+        
+        return "\n".join(context_parts) if context_parts else None
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการสร้างบริบท AI: {str(e)}")
+        return None
+
+def get_risk_level_from_score_util(substance, score):
+    """แปลคะแนน ASSIST เป็นระดับความเสี่ยง (utility function)"""
+    if substance == 'เครื่องดื่มแอลกอฮอล์':
+        if score <= 10:
+            return 'ความเสี่ยงต่ำ'
+        elif score <= 26:
+            return 'ความเสี่ยงปานกลาง'
+        else:
+            return 'ความเสี่ยงสูง'
+    else:
+        if score <= 3:
+            return 'ความเสี่ยงต่ำ'
+        elif score <= 26:
+            return 'ความเสี่ยงปานกลาง'
+        else:
+            return 'ความเสี่ยงสูง'
+
+def summarize_user_risk_profile(user_id, db_manager, deepseek_client, config):
+    """สร้างสรุปโปรไฟล์ความเสี่ยงของผู้ใช้โดยใช้ AI"""
+    try:
+        # ดึงข้อมูลความเสี่ยงแบบดิบ
+        risk_context = get_user_risk_context(user_id, db_manager)
+        
+        if not risk_context:
+            return "ไม่มีข้อมูลการประเมินความเสี่ยง"
+        
+        # สร้าง prompt สำหรับ AI
+        summary_prompt = f"""
+จากข้อมูลการประเมินความเสี่ยงต่อไปนี้:
+
+{risk_context}
+
+โปรดสร้างสรุปโปรไฟล์ความเสี่ยงของผู้ใช้ที่:
+1. กระชับและเข้าใจง่าย
+2. เน้นประเด็นสำคัญที่ควรให้ความสนใจ
+3. ให้คำแนะนำเบื้องต้นที่เหมาะสม
+4. ใช้ภาษาไทยที่เป็นมิตรและไม่ทำให้เกิดความกังวล
+5. ความยาวไม่เกิน 200 คำ
+
+สรุปโปรไฟล์ความเสี่ยง:"""
+
+        # เรียกใช้ AI
+        response = deepseek_client.chat.completions.create(
+            model=config.DEEPSEEK_MODEL,
+            messages=[
+                {"role": "system", "content": "คุณคือผู้เชี่ยวชาญด้านการประเมินความเสี่ยงสารเสพติดที่ให้คำปรึกษาด้วยความเข้าใจและเป็นมิตร"},
+                {"role": "user", "content": summary_prompt}
+            ],
+            temperature=0.3,
+            max_tokens=300
+        )
+        
+        if response and response.choices and response.choices[0].message.content:
+            summary = response.choices[0].message.content.strip()
+            summary = clean_ai_response(summary)
+            return summary
+        
+        # Fallback ถ้า AI ไม่ตอบ
+        return risk_context
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการสร้างสรุปโปรไฟล์ความเสี่ยง: {str(e)}")
+        return "ไม่สามารถสร้างสรุปโปรไฟล์ความเสี่ยงได้"
