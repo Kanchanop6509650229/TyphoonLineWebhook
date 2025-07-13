@@ -27,7 +27,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # นำเข้าโมดูลภายในโปรเจค
 from .middleware.rate_limiter import init_limiter
 from .config import load_config, SYSTEM_MESSAGES, GENERATION_CONFIG, SUMMARY_GENERATION_CONFIG, TOKEN_THRESHOLD
-from .utils import safe_db_operation, safe_api_call, clean_ai_response, handle_deepseek_api_error
+from .utils import safe_db_operation, safe_api_call, clean_ai_response, handle_deepseek_api_error, check_hospital_inquiry, get_hospital_information_message
 from .chat_history_db import ChatHistoryDB
 from .token_counter import TokenCounter
 from .session_manager import (
@@ -39,6 +39,7 @@ from .session_manager import (
     hybrid_context_management,
     is_important_message,
     get_session_token_count,
+    generate_contextual_followup_message
 )
 from .risk_assessment import (
     init_risk_assessment,
@@ -583,6 +584,7 @@ def get_follow_up_status(user_id):
         logging.error(f"เกิดข้อผิดพลาดในการดึงสถานะการติดตามผล: {str(e)}")
         return "ไม่สามารถดึงข้อมูลการติดตามได้ในขณะนี้"
 
+
 def check_and_send_follow_ups():
     """ตรวจสอบและส่งการติดตามที่ถึงกำหนด พร้อมกำหนดการติดตามครั้งถัดไป"""
     logging.info("กำลังรันการตรวจสอบการติดตามผลตามกำหนดเวลา")
@@ -596,14 +598,12 @@ def check_and_send_follow_ups():
         )
 
         for user_id in due_follow_ups:
-            # แปลง bytes เป็น string ถ้าจำเป็น
+            # แปลง bytes เป็ string ถ้าจำเป็น
             if isinstance(user_id, bytes):
                 user_id = user_id.decode('utf-8')
 
-            follow_up_message = (
-                "สวัสดีค่ะ ใจดีมาติดตามผลการเลิกใช้สารเสพติดของคุณ\n"
-                "คุณสามารถเล่าให้ฟังได้ว่าช่วงที่ผ่านมาเป็นอย่างไรบ้าง?"
-            )
+            # สร้างข้อความติดตามที่เป็นไปตามบริบทของการสนทนา
+            follow_up_message = generate_contextual_followup_message(user_id, db, deepseek_client, config)
             try:
                 line_bot_api.push_message(
                     user_id,
@@ -793,6 +793,7 @@ def process_conversation_data(user_id, user_message, bot_response, messages):
         warning_thread.start()
 
 # ฟังก์ชันสำหรับการจัดการข้อความที่ถูกล็อค
+
 def handle_locked_user(user_id):
     """จัดการกรณีผู้ใช้ถูกล็อค"""
     wait_notice_sent = redis_client.exists(f"wait_notice:{user_id}")
@@ -824,6 +825,12 @@ def process_user_message(user_id, user_message, reply_token):
     # ตรวจสอบและจัดการคำสั่ง
     if user_message.startswith('/'):
         handle_command_with_processing(user_id, user_message)
+        return
+
+    # ตรวจสอบคำสอบถามเกี่ยวกับสถานพยาบาล
+    if check_hospital_inquiry(user_message):
+        hospital_response = get_hospital_information_message()
+        send_final_response(user_id, hospital_response)
         return
 
     # ประมวลผลกับ AI และส่งการตอบกลับ
