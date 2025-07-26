@@ -50,6 +50,26 @@ from .risk_assessment import (
 from .async_api import AsyncDeepseekClient
 from .database_init import initialize_database
 from .database_manager import DatabaseManager
+import traceback
+from typing import Optional, List, Dict, Tuple
+from enum import Enum
+
+class ErrorType(Enum):
+    """ประเภทข้อผิดพลาดที่อาจเกิดขึ้น"""
+    CONTEXT_LOAD_ERROR = "context_load_error"
+    TOKEN_MANAGEMENT_ERROR = "token_management_error"
+    AI_API_ERROR = "ai_api_error"
+    MESSAGE_SEND_ERROR = "message_send_error"
+    DATABASE_ERROR = "database_error"
+    UNKNOWN_ERROR = "unknown_error"
+
+class ChatbotError(Exception):
+    """Custom exception สำหรับ chatbot"""
+    def __init__(self, error_type: ErrorType, message: str, original_error: Optional[Exception] = None):
+        self.error_type = error_type
+        self.message = message
+        self.original_error = original_error
+        super().__init__(self.message)
 
 SESSION_TIMEOUT = 604800
 
@@ -378,23 +398,116 @@ def is_user_registered(user_id):
         return False
 
 def register_user_with_code(user_id, code):
-    """ยืนยันการลงทะเบียนด้วยรหัสยืนยัน"""
+    """ยืนยันการลงทะเบียนด้วยรหัสยืนยันและโหลดบริบทผู้ใช้"""
     try:
         # ตรวจสอบว่ารหัสมีอยู่และยังไม่หมดอายุ
-        query = 'SELECT code FROM registration_codes WHERE code = %s AND status = %s'
-        result = db_manager.execute_query(query, (code, 'pending'))
-
+        query = 'SELECT code, form_data FROM registration_codes WHERE code = %s AND status = %s'
+        result = db_manager.execute_query(query, (code, 'pending'), dictionary=True)
+        
         if not result:
             return False, "รหัสยืนยันไม่ถูกต้องหรือหมดอายุแล้ว"
-
+        
+        # ดึงข้อมูล form และสรุป
+        form_data_json = result[0].get('form_data', '{}')
+        form_data = json.loads(form_data_json) if form_data_json else {}
+        
         # อัพเดทรหัสให้เชื่อมกับผู้ใช้และสถานะเป็น verified
         update_query = 'UPDATE registration_codes SET user_id = %s, status = %s, verified_at = %s WHERE code = %s'
         db_manager.execute_and_commit(update_query, (user_id, 'verified', datetime.now(), code))
-
-        return True, "ลงทะเบียนเรียบร้อยแล้ว! คุณสามารถใช้งานแชทบอทได้ทันที"
+        
+        # บันทึกบริบทเริ่มต้นของผู้ใช้
+        if form_data and 'ai_summary' in form_data:
+            save_user_initial_context(user_id, form_data['ai_summary'])
+            
+        # ส่งข้อความต้อนรับพร้อมบริบท
+        welcome_message = create_personalized_welcome_message(form_data)
+        
+        return True, welcome_message
+        
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการลงทะเบียน: {str(e)}")
         return False, "เกิดข้อผิดพลาดในการลงทะเบียน กรุณาลองอีกครั้ง"
+    
+def save_user_initial_context(user_id, ai_summary):
+    """บันทึกบริบทเริ่มต้นของผู้ใช้ใน Redis"""
+    try:
+        # บันทึกบริบทใน Redis โดยไม่มีเวลาหมดอายุ
+        context_key = f"user_context:{user_id}"
+        redis_client.set(context_key, ai_summary)
+        
+        # บันทึกเวลาที่สร้างบริบท
+        redis_client.set(f"context_created:{user_id}", datetime.now().timestamp())
+        
+        logging.info(f"บันทึกบริบทเริ่มต้นสำหรับผู้ใช้: {user_id}")
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการบันทึกบริบท: {str(e)}")
+
+
+def get_user_context(user_id):
+    """ดึงบริบทของผู้ใช้จาก Redis"""
+    try:
+        context_key = f"user_context:{user_id}"
+        context = redis_client.get(context_key)
+        
+        if context:
+            if isinstance(context, bytes):
+                context = context.decode('utf-8')
+            return context
+            
+        # ถ้าไม่มีบริบทใน Redis ลองดึงจากฐานข้อมูล
+        query = '''
+            SELECT form_data 
+            FROM registration_codes 
+            WHERE user_id = %s AND status = 'verified'
+            ORDER BY verified_at DESC
+            LIMIT 1
+        '''
+        result = db_manager.execute_query(query, (user_id,))
+        
+        if result and result[0][0]:
+            form_data = json.loads(result[0][0])
+            if 'ai_summary' in form_data:
+                # บันทึกกลับใน Redis สำหรับการใช้ครั้งถัดไป
+                save_user_initial_context(user_id, form_data['ai_summary'])
+                return form_data['ai_summary']
+                
+        return None
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการดึงบริบทผู้ใช้: {str(e)}")
+        return None
+
+
+def create_personalized_welcome_message(form_data):
+    """สร้างข้อความต้อนรับแบบเฉพาะบุคคลตามข้อมูลจาก form"""
+    base_message = "✅ ลงทะเบียนเรียบร้อยแล้ว! ยินดีต้อนรับสู่แชทบอทน้องใจดีค่ะ\n\n"
+    
+    if not form_data or 'ai_summary' not in form_data:
+        return base_message + "ใจดีพร้อมเป็นเพื่อนคุยและช่วยเหลือคุณในเส้นทางการเลิกสารเสพติด มีอะไรอยากคุยเป็นพิเศษไหมคะ?"
+    
+    # ถ้ามีข้อมูลจาก form ให้สร้างข้อความเฉพาะบุคคล
+    personalized_message = base_message
+    
+    # ตรวจสอบระดับความเสี่ยง
+    if 'full_data' in form_data and 'riskAssessment' in form_data['full_data']:
+        risk_level = form_data['full_data']['riskAssessment'].get('overallRisk', 'medium')
+        
+        if risk_level == 'high':
+            personalized_message += "ใจดีเข้าใจว่าคุณอาจกำลังเผชิญกับความท้าทายที่สำคัญ "
+            personalized_message += "พร้อมที่จะเป็นกำลังใจและช่วยเหลือคุณทุกขั้นตอนนะคะ\n\n"
+        elif risk_level == 'medium':
+            personalized_message += "ใจดีดีใจที่คุณตัดสินใจขอความช่วยเหลือ "
+            personalized_message += "เราจะผ่านเรื่องนี้ไปด้วยกันนะคะ\n\n"
+        else:
+            personalized_message += "ขอชื่นชมที่คุณให้ความสำคัญกับสุขภาพของตัวเอง "
+            personalized_message += "ใจดีพร้อมสนับสนุนคุณค่ะ\n\n"
+    
+    personalized_message += "จากข้อมูลที่คุณให้มา ใจดีพร้อมที่จะช่วยเหลือคุณแบบเฉพาะบุคคล "
+    personalized_message += "คุณสามารถพูดคุยเรื่องใดก็ได้ที่คุณสบายใจ หรือถามคำถามที่อยากรู้ได้เลยค่ะ\n\n"
+    personalized_message += "💚 พิมพ์ /help เพื่อดูคำสั่งทั้งหมด"
+    
+    return personalized_message
 
 def send_registration_message(user_id):
     """ส่งข้อความแนะนำการลงทะเบียน"""
@@ -404,7 +517,10 @@ def send_registration_message(user_id):
         "1. กรอกแบบฟอร์มที่ลิงก์นี้: https://forms.gle/gVE6WN7W5thHR1kZ9\n"
         "2. หลังกรอกเสร็จ คุณจะได้รับรหัสยืนยัน 6 หลัก\n"
         "3. นำรหัสมาพิมพ์ที่นี่ด้วยคำสั่ง \"/verify รหัส\" เช่น \"/verify 123456\"\n\n"
-        "หากมีข้อสงสัย พิมพ์ /help เพื่อดูคำแนะนำ"
+        "หากมีข้อสงสัย พิมพ์ /help เพื่อดูคำแนะนำ\n\n"
+        "📧 ติดต่อสอบถาม:\n"
+        "• ปัญหาทางเทคนิค: pahnkcn@gmail.com\n"
+        "• คำถามเกี่ยวกับการวิจัย: Std6548097@pcm.ac.th"
     )
 
     line_bot_api.push_message(
@@ -720,6 +836,108 @@ def start_loading_animation(user_id, duration=60):
         logging.error(f"เกิดข้อผิดพลาดในการเริ่มภาพเคลื่อนไหวการโหลด: {str(e)}")
         return False, 0
 
+@safe_api_call
+def summarize_form_data(form_data):
+    """
+    สรุปข้อมูลจาก Google Form โดยใช้ DeepSeek AI
+    
+    Args:
+        form_data (dict): ข้อมูลจาก Google Form
+        
+    Returns:
+        str: ข้อความสรุปข้อมูลผู้ใช้
+    """
+    try:
+        # สร้าง prompt สำหรับการสรุป
+        prompt = """
+จากข้อมูลแบบประเมินต่อไปนี้ กรุณาสรุปข้อมูลสำคัญของผู้ใช้ในรูปแบบที่จะช่วยให้แชทบอทเข้าใจบริบทและให้คำปรึกษาได้อย่างเหมาะสม:
+
+ข้อมูลการตอบแบบสอบถาม:
+"""
+        
+        # เพิ่มคำถาม-คำตอบทั้งหมด
+        for item in form_data.get('responses', []):
+            prompt += f"\nคำถาม: {item['question']}\nคำตอบ: {item['answer']}\n"
+        
+        # เพิ่มข้อมูล ASSIST scores
+        if 'assistScores' in form_data:
+            prompt += "\n\nผลการประเมิน ASSIST:\n"
+            for substance, score in form_data['assistScores'].items():
+                prompt += f"- {substance}: {score} คะแนน\n"
+        
+        # เพิ่มการประเมินความเสี่ยง
+        if 'riskAssessment' in form_data:
+            risk_data = form_data['riskAssessment']
+            prompt += f"\n\nระดับความเสี่ยงโดยรวม: {risk_data.get('overallRisk', 'ไม่ระบุ')}\n"
+        
+        prompt += """
+กรุณาสรุปข้อมูลในหัวข้อต่อไปนี้:
+1. ประวัติการใช้สารเสพติด (ชนิด ความถี่ ระยะเวลา)
+2. ระดับความเสี่ยงและปัญหาที่พบ
+3. แรงจูงใจและเป้าหมายในการเลิก
+4. ปัจจัยสนับสนุนและอุปสรรค
+5. ข้อมูลสำคัญอื่นๆ ที่ควรทราบ
+
+โปรดสรุปให้กระชับ ชัดเจน และเป็นประโยชน์ต่อการให้คำปรึกษา
+"""
+        
+        # เรียก DeepSeek API
+        response = deepseek_client.chat.completions.create(
+            model=config.DEEPSEEK_MODEL,
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "คุณคือผู้เชี่ยวชาญด้านการบำบัดสารเสพติด ช่วยสรุปข้อมูลผู้ใช้อย่างเป็นมืออาชีพ"
+                },
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,  # ใช้ค่าต่ำเพื่อความแม่นยำ
+            max_tokens=1000
+        )
+        
+        summary = response.choices[0].message.content
+        return clean_ai_response(summary)
+        
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการสรุปข้อมูล form: {str(e)}")
+        # ถ้าสรุปไม่ได้ ให้สร้างสรุปพื้นฐาน
+        return create_basic_summary(form_data)
+
+
+def create_basic_summary(form_data):
+    """สร้างสรุปพื้นฐานถ้า AI ไม่สามารถสรุปได้"""
+    summary = "ข้อมูลพื้นฐานจากแบบประเมิน:\n\n"
+    
+    if 'assistScores' in form_data:
+        summary += "สารเสพติดที่ใช้:\n"
+        for substance, score in form_data['assistScores'].items():
+            risk_level = get_risk_level_from_score(substance, score)
+            summary += f"- {substance}: {score} คะแนน ({risk_level})\n"
+    
+    if 'riskAssessment' in form_data:
+        risk = form_data['riskAssessment'].get('overallRisk', 'ไม่ระบุ')
+        summary += f"\nระดับความเสี่ยงโดยรวม: {risk}\n"
+    
+    return summary
+
+
+def get_risk_level_from_score(substance, score):
+    """คำนวณระดับความเสี่ยงจากคะแนน"""
+    if substance == 'เครื่องดื่มแอลกอฮอล์':
+        if score <= 10:
+            return 'ความเสี่ยงต่ำ'
+        elif score <= 26:
+            return 'ความเสี่ยงปานกลาง'
+        else:
+            return 'ความเสี่ยงสูง'
+    else:
+        if score <= 3:
+            return 'ความเสี่ยงต่ำ'
+        elif score <= 26:
+            return 'ความเสี่ยงปานกลาง'
+        else:
+            return 'ความเสี่ยงสูง'
+
 def process_conversation_data(user_id, user_message, bot_response, messages):
     """
     ประมวลผลและบันทึกข้อมูลการสนทนา พร้อมกับตรวจสอบความเสี่ยง
@@ -834,73 +1052,481 @@ def process_user_message(user_id, user_message, reply_token):
         return
 
     # ประมวลผลกับ AI และส่งการตอบกลับ
-    process_ai_response(user_id, user_message, start_time, animation_success)
+    process_ai_response_with_context(user_id, user_message, start_time, animation_success)
 
-def process_ai_response(user_id, user_message, start_time, animation_success):
-    """สร้างการตอบกลับ AI และจัดการผลลัพธ์"""
+def process_ai_response_with_context(user_id: str, user_message: str, start_time: float, animation_success: bool):
+    """
+    สร้างการตอบกลับ AI โดยใช้บริบทจาก form พร้อมการจัดการข้อผิดพลาดที่ดีขึ้น
+    """
+    # ตัวแปรสำหรับเก็บสถานะและข้อมูลสำคัญ
+    user_context = None
+    messages = []
+    bot_response = None
+    error_occurred = False
+    fallback_response = None
+    
     try:
-        # ตรวจสอบและปรับประวัติการสนทนาโดยใช้การจัดการแบบไฮบริด
-        session_token_count = get_session_token_count(user_id)
-        logging.info(f"จำนวนโทเค็นปัจจุบันในเซสชัน: {session_token_count} (ผู้ใช้: {user_id})")
-
-        # ถ้าโทเค็นเกินขีดจำกัด ใช้ระบบไฮบริด
-        if session_token_count > TOKEN_THRESHOLD:
-            logging.info(f"จำนวนโทเค็นเกินขีดจำกัด ({session_token_count} > {TOKEN_THRESHOLD}), กำลังใช้ระบบจัดการประวัติแบบไฮบริด")
-            messages = hybrid_context_management(user_id)
-        else:
-            # ดึงเซสชันการแชทและประวัติปกติ
-            messages = get_chat_session(user_id)
-
-            # ประมวลผลประวัติและสร้างการตอบกลับ
-            optimized_history = db.get_user_history(user_id, max_tokens=10000)
-            prepare_conversation_context(messages, optimized_history)
-
-        # เพิ่มข้อความของผู้ใช้
-        messages.append({"role": "user", "content": user_message})
-
-        # รับการตอบกลับจาก DeepSeek พร้อมการจัดการข้อผิดพลาด
+        # 1. ดึงบริบทผู้ใช้ (ไม่ critical - สามารถทำงานต่อได้แม้ไม่มีบริบท)
         try:
-            response = generate_ai_response(messages)
-
-            # ตรวจสอบการตอบกลับ
-            if not response or not hasattr(response, 'choices') or not response.choices:
-                raise ValueError("ได้รับการตอบกลับที่ไม่ถูกต้องจาก AI API")
-
-            # ดึงและทำความสะอาดข้อความตอบกลับ
-            original_bot_response = response.choices[0].message.content
-
-            # ขั้นตอนการทำความสะอาด response
-            bot_response = clean_ai_response(original_bot_response)
-
-            # บันทึก log หากมีการทำความสะอาด
-            if original_bot_response != bot_response:
-                logging.info(f"ทำความสะอาด response จาก DeepSeek AI สำหรับผู้ใช้: {user_id}")
-
-        except Exception as api_error:
-            # จัดการกับข้อผิดพลาดการเรียก API
-            logging.error(f"เกิดข้อผิดพลาดในการเรียก DeepSeek API: {str(api_error)}")
-            bot_response = handle_deepseek_api_error(api_error, user_id, user_message)
-
-        # เพิ่มข้อความตอบกลับลงในประวัติการสนทนา
+            user_context = get_user_context(user_id)
+            if user_context:
+                logging.info(f"โหลดบริบทผู้ใช้สำเร็จ: {user_id}")
+        except Exception as e:
+            logging.warning(f"ไม่สามารถโหลดบริบทผู้ใช้ {user_id}: {str(e)}")
+            # ไม่ throw error - ให้ทำงานต่อแบบไม่มีบริบท
+            user_context = None
+        
+        # 2. จัดการประวัติการสนทนาและโทเค็น
+        try:
+            messages = prepare_conversation_messages(user_id, user_context)
+        except TokenThresholdExceeded:
+            # ถ้าโทเค็นเกิน ใช้การจัดการแบบพิเศษ
+            logging.info(f"โทเค็นเกินขีดจำกัดสำหรับผู้ใช้ {user_id}, ใช้การจัดการแบบไฮบริด")
+            try:
+                messages = hybrid_context_management(user_id)
+                # เพิ่มบริบทกลับเข้าไปถ้ามี
+                if user_context:
+                    add_context_to_messages(messages, user_context)
+            except Exception as hybrid_error:
+                logging.error(f"การจัดการแบบไฮบริดล้มเหลว: {str(hybrid_error)}")
+                # Fallback: ใช้เซสชันว่าง
+                messages = create_minimal_session(user_context)
+        except Exception as e:
+            logging.error(f"เกิดข้อผิดพลาดในการเตรียมข้อความ: {str(e)}")
+            messages = create_minimal_session(user_context)
+        
+        # 3. เพิ่มข้อความของผู้ใช้
+        messages.append({"role": "user", "content": user_message})
+        
+        # 4. เรียก AI API พร้อม retry mechanism
+        bot_response = None
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries and bot_response is None:
+            try:
+                response = generate_ai_response_with_timeout(messages, timeout=30)
+                
+                if not response or not hasattr(response, 'choices') or not response.choices:
+                    raise ValueError("Invalid AI response structure")
+                
+                bot_response = clean_ai_response(response.choices[0].message.content)
+                
+                if not bot_response or len(bot_response.strip()) == 0:
+                    raise ValueError("Empty response from AI")
+                    
+                break  # สำเร็จ
+                
+            except requests.exceptions.Timeout:
+                retry_count += 1
+                if retry_count < max_retries:
+                    logging.warning(f"AI API timeout (attempt {retry_count}/{max_retries})")
+                    time.sleep(2 ** retry_count)  # Exponential backoff
+                else:
+                    raise ChatbotError(
+                        ErrorType.AI_API_ERROR,
+                        "AI API timeout after all retries",
+                        e
+                    )
+                    
+            except RateLimitError as e:
+                # จัดการ rate limit แบบพิเศษ
+                wait_time = e.retry_after if hasattr(e, 'retry_after') else 60
+                logging.warning(f"Rate limited, waiting {wait_time} seconds")
+                
+                # ส่งข้อความแจ้งผู้ใช้
+                send_rate_limit_notification(user_id, wait_time)
+                
+                # รอแล้วลองใหม่
+                time.sleep(wait_time)
+                retry_count += 1
+                
+            except Exception as e:
+                logging.error(f"AI API error (attempt {retry_count + 1}): {str(e)}")
+                retry_count += 1
+                if retry_count >= max_retries:
+                    raise ChatbotError(
+                        ErrorType.AI_API_ERROR,
+                        f"AI API error after {max_retries} attempts",
+                        e
+                    )
+        
+        # 5. ถ้ายังไม่มี response ให้ใช้ fallback
+        if not bot_response:
+            bot_response = generate_fallback_response(user_message, user_context)
+            fallback_response = bot_response  # บันทึกว่าใช้ fallback
+        
+        # 6. เพิ่มข้อความตอบกลับลงในประวัติ
         messages.append({"role": "assistant", "content": bot_response})
-
-        # ประมวลผลข้อมูลการตอบกลับ
-        process_conversation_data(user_id, user_message, bot_response, messages)
-
-        # จัดการจังหวะเวลาสำหรับ UX ที่ดีขึ้น
+        
+        # 7. ประมวลผลและบันทึกข้อมูล (ใช้ transaction-like approach)
+        try:
+            process_conversation_data_safely(user_id, user_message, bot_response, messages)
+        except Exception as e:
+            logging.error(f"เกิดข้อผิดพลาดในการบันทึกข้อมูล: {str(e)}")
+            # ไม่ให้ error นี้ทำให้ผู้ใช้ไม่ได้รับคำตอบ
+            error_occurred = True
+        
+        # 8. จัดการจังหวะเวลา
         handle_response_timing(start_time, animation_success)
-
-        # ส่งการตอบกลับสุดท้าย
-        send_final_response(user_id, bot_response)
-
-        # บันทึกเวลาประมวลผลทั้งหมด
+        
+        # 9. ส่งการตอบกลับ
+        try:
+            success = send_final_response(user_id, bot_response)
+            if not success:
+                raise ChatbotError(
+                    ErrorType.MESSAGE_SEND_ERROR,
+                    "Failed to send response to user"
+                )
+                
+            # ถ้าใช้ fallback หรือมี error แจ้งให้ผู้ใช้ทราบ
+            if fallback_response or error_occurred:
+                send_system_notification(user_id, fallback_response, error_occurred)
+                
+        except Exception as e:
+            logging.critical(f"ไม่สามารถส่งข้อความให้ผู้ใช้ {user_id}: {str(e)}")
+            # นี่คือ critical error - ผู้ใช้จะไม่ได้รับการตอบกลับเลย
+            notify_admin_critical_error(user_id, user_message, str(e))
+            
+        # 10. บันทึกเวลาประมวลผล
         total_time = time.time() - start_time
-        logging.info(f"เวลาในการประมวลผลทั้งหมดสำหรับผู้ใช้ {user_id}: {total_time:.2f} วินาที")
-
+        logging.info(f"เวลาประมวลผลทั้งหมดสำหรับผู้ใช้ {user_id}: {total_time:.2f} วินาที")
+        
+        # 11. บันทึก metrics
+        record_processing_metrics(user_id, total_time, fallback_response is not None, error_occurred)
+        
+    except ChatbotError as e:
+        # จัดการ custom errors
+        handle_chatbot_error(e, user_id, user_message)
+        
     except Exception as e:
-        logging.error(f"เกิดข้อผิดพลาดในการประมวลผล AI: {str(e)}", exc_info=True)
-        error_message = "ขออภัยค่ะ เกิดข้อผิดพลาดในการประมวลผล กรุณาลองใหม่อีกครั้ง"
-        send_final_response(user_id, error_message)
+        # จัดการ unexpected errors
+        logging.critical(f"Unexpected error in process_ai_response: {str(e)}", exc_info=True)
+        handle_unexpected_error(e, user_id, user_message)
+
+
+def prepare_conversation_messages(user_id: str, user_context: Optional[str]) -> List[Dict[str, str]]:
+    """เตรียมข้อความสำหรับการสนทนา พร้อมจัดการข้อผิดพลาด"""
+    try:
+        session_token_count = get_session_token_count(user_id)
+        logging.info(f"จำนวนโทเค็นปัจจุบัน: {session_token_count} (ผู้ใช้: {user_id})")
+        
+        if session_token_count > TOKEN_THRESHOLD:
+            raise TokenThresholdExceeded(f"Token count {session_token_count} exceeds threshold")
+        
+        # ดึงประวัติการสนทนา
+        messages = get_chat_session(user_id) or []
+        
+        # เพิ่มประวัติจากฐานข้อมูลถ้าจำเป็น
+        try:
+            optimized_history = db.get_user_history(user_id, max_tokens=10000)
+            if optimized_history:
+                prepare_conversation_context(messages, optimized_history)
+        except Exception as e:
+            logging.warning(f"ไม่สามารถโหลดประวัติจากฐานข้อมูล: {str(e)}")
+        
+        # เพิ่มบริบทถ้ามี
+        if user_context:
+            add_context_to_messages(messages, user_context)
+            
+        return messages
+        
+    except Exception as e:
+        logging.error(f"Error in prepare_conversation_messages: {str(e)}")
+        raise
+
+
+def add_context_to_messages(messages: List[Dict[str, str]], user_context: str):
+    """เพิ่มบริบทผู้ใช้ลงในข้อความ"""
+    # ตรวจสอบว่ายังไม่มีบริบทอยู่แล้ว
+    if not any(msg.get('content', '').startswith('บริบทผู้ใช้จากแบบประเมิน:') for msg in messages):
+        context_message = {
+            "role": "system",
+            "content": f"บริบทผู้ใช้จากแบบประเมิน:\n{user_context}\n\nใช้ข้อมูลนี้เพื่อให้คำปรึกษาที่เหมาะสมกับสถานการณ์ของผู้ใช้"
+        }
+        # แทรกหลัง system message หลัก
+        if messages and messages[0].get('role') == 'system':
+            messages.insert(1, context_message)
+        else:
+            messages.insert(0, context_message)
+
+
+def create_minimal_session(user_context: Optional[str]) -> List[Dict[str, str]]:
+    """สร้างเซสชันขั้นต่ำเมื่อไม่สามารถโหลดประวัติได้"""
+    messages = [SYSTEM_MESSAGES]
+    
+    if user_context:
+        add_context_to_messages(messages, user_context)
+        
+    return messages
+
+
+def generate_ai_response_with_timeout(messages: List[Dict[str, str]], timeout: int = 30):
+    """เรียก AI API พร้อม timeout"""
+    # ใช้ threading หรือ asyncio สำหรับ timeout
+    import concurrent.futures
+    
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(
+            deepseek_client.chat.completions.create,
+            model=config.DEEPSEEK_MODEL,
+            messages=[SYSTEM_MESSAGES] + messages,
+            **GENERATION_CONFIG
+        )
+        
+        try:
+            response = future.result(timeout=timeout)
+            return response
+        except concurrent.futures.TimeoutError:
+            raise requests.exceptions.Timeout(f"AI API timeout after {timeout} seconds")
+
+
+def generate_fallback_response(user_message: str, user_context: Optional[str]) -> str:
+    """สร้างคำตอบสำรองเมื่อ AI API ไม่ทำงาน"""
+    # ตรวจสอบประเภทของคำถาม
+    message_lower = user_message.lower()
+    
+    # คำตอบสำหรับกรณีฉุกเฉิน
+    if any(word in message_lower for word in ['ฆ่าตัวตาย', 'ทำร้ายตัวเอง', 'อยากตาย']):
+        return (
+            "ใจดีเข้าใจว่าคุณกำลังผ่านช่วงเวลาที่ยากลำบาก\n\n"
+            "⚠️ กรุณาติดต่อสายด่วนสุขภาพจิต 1323 ทันที\n"
+            "หรือโทร 1669 หากต้องการความช่วยเหลือฉุกเฉิน\n\n"
+            "คุณไม่ได้อยู่คนเดียว มีคนพร้อมช่วยเหลือคุณตลอด 24 ชั่วโมง"
+        )
+    
+    # คำตอบทั่วไป
+    return (
+        "ขออภัยค่ะ ระบบกำลังประสบปัญหาชั่วคราว\n\n"
+        "ใจดียังคงอยู่ที่นี่และพร้อมรับฟังคุณ "
+        "กรุณาลองพูดคุยกับใจดีอีกครั้งในอีกสักครู่นะคะ\n\n"
+        "หากต้องการความช่วยเหลือเร่งด่วน:\n"
+        "📞 สายด่วนยาเสพติด: 1165\n"
+        "📞 สายด่วนสุขภาพจิต: 1323"
+    )
+
+
+def process_conversation_data_safely(user_id: str, user_message: str, bot_response: str, messages: List[Dict[str, str]]):
+    """บันทึกข้อมูลการสนทนาแบบปลอดภัย"""
+    try:
+        # ใช้ transaction-like approach
+        temp_data = {
+            'user_id': user_id,
+            'user_message': user_message,
+            'bot_response': bot_response,
+            'timestamp': datetime.now(),
+            'messages': messages.copy()
+        }
+        
+        # บันทึกลง Redis ก่อน (fast, ถ้าล้มเหลวยังมีข้อมูลใน memory)
+        try:
+            save_chat_session(user_id, messages)
+        except Exception as e:
+            logging.error(f"Failed to save to Redis: {str(e)}")
+            # เก็บใน queue สำหรับ retry ภายหลัง
+            queue_for_retry('redis_save', temp_data)
+        
+        # บันทึกลงฐานข้อมูล
+        try:
+            message_token_count = token_counter.count_tokens(user_message + bot_response)
+            risk_level, keywords = assess_risk(user_message)
+            is_important = is_important_message(user_message, bot_response)
+            
+            db.save_conversation(
+                user_id=user_id,
+                user_message=user_message,
+                bot_response=bot_response,
+                token_count=message_token_count,
+                important=is_important
+            )
+            
+            save_progress_data(user_id, risk_level, keywords)
+            
+        except Exception as e:
+            logging.error(f"Failed to save to database: {str(e)}")
+            queue_for_retry('db_save', temp_data)
+        
+        # กำหนดการติดตาม
+        try:
+            schedule_follow_up(user_id, None)
+        except Exception as e:
+            logging.error(f"Failed to schedule follow-up: {str(e)}")
+            # ไม่ critical - ไม่ต้อง retry
+            
+    except Exception as e:
+        logging.error(f"Unexpected error in process_conversation_data_safely: {str(e)}")
+        raise
+
+
+def send_system_notification(user_id: str, used_fallback: bool, had_error: bool):
+    """ส่งการแจ้งเตือนระบบให้ผู้ใช้"""
+    if used_fallback:
+        message = "💡 หมายเหตุ: ระบบใช้การตอบกลับสำรองเนื่องจากมีปัญหาชั่วคราว"
+    elif had_error:
+        message = "⚠️ มีข้อผิดพลาดบางอย่างในการบันทึกข้อมูล แต่การสนทนายังดำเนินต่อได้"
+    else:
+        return
+        
+    # ส่งแบบ delayed เพื่อไม่รบกวน flow หลัก
+    def send_delayed():
+        time.sleep(2)
+        try:
+            line_bot_api.push_message(user_id, TextSendMessage(text=message))
+        except:
+            pass  # ไม่ต้องทำอะไรถ้าส่งไม่ได้
+            
+    threading.Thread(target=send_delayed, daemon=True).start()
+
+
+def handle_chatbot_error(error: ChatbotError, user_id: str, user_message: str):
+    """จัดการข้อผิดพลาดที่คาดการณ์ได้"""
+    logging.error(f"ChatbotError [{error.error_type.value}]: {error.message}")
+    
+    # ส่งข้อความที่เหมาะสมตามประเภทข้อผิดพลาด
+    error_messages = {
+        ErrorType.AI_API_ERROR: "ขออภัยค่ะ ระบบ AI กำลังมีปัญหา กรุณาลองใหม่อีกครั้ง",
+        ErrorType.TOKEN_MANAGEMENT_ERROR: "กำลังจัดระเบียบข้อมูล กรุณารอสักครู่",
+        ErrorType.DATABASE_ERROR: "มีปัญหาในการบันทึกข้อมูล แต่เรายังคุยกันต่อได้ค่ะ",
+        ErrorType.MESSAGE_SEND_ERROR: "ไม่สามารถส่งข้อความได้ กรุณาตรวจสอบการเชื่อมต่อ"
+    }
+    
+    message = error_messages.get(
+        error.error_type, 
+        "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่"
+    )
+    
+    try:
+        send_final_response(user_id, message)
+    except:
+        # ถ้าส่งไม่ได้จริงๆ บันทึก log
+        logging.critical(f"Cannot send error message to user {user_id}")
+
+
+def handle_unexpected_error(error: Exception, user_id: str, user_message: str):
+    """จัดการข้อผิดพลาดที่ไม่คาดคิด"""
+    error_id = f"ERR_{datetime.now().strftime('%Y%m%d%H%M%S')}_{user_id[:8]}"
+    
+    logging.critical(
+        f"Unexpected error {error_id}:\n"
+        f"User: {user_id}\n"
+        f"Message: {user_message}\n"
+        f"Error: {str(error)}\n"
+        f"Traceback: {traceback.format_exc()}"
+    )
+    
+    # บันทึกข้อผิดพลาดสำหรับการวิเคราะห์
+    save_error_for_analysis(error_id, user_id, user_message, error)
+    
+    # ส่งข้อความให้ผู้ใช้
+    try:
+        message = (
+            "ขออภัยค่ะ เกิดข้อผิดพลาดที่ไม่คาดคิด\n"
+            f"รหัสข้อผิดพลาด: {error_id}\n\n"
+            "กรุณาลองใหม่อีกครั้ง หรือติดต่อผู้ดูแลระบบ"
+        )
+        send_final_response(user_id, message)
+    except:
+        pass
+
+
+def queue_for_retry(operation_type: str, data: dict):
+    """เก็บข้อมูลไว้สำหรับ retry ภายหลัง"""
+    try:
+        retry_key = f"retry_queue:{operation_type}"
+        redis_client.lpush(retry_key, json.dumps({
+            'data': data,
+            'timestamp': datetime.now().isoformat(),
+            'attempts': 0
+        }))
+        # ตั้ง expiry 24 ชั่วโมง
+        redis_client.expire(retry_key, 86400)
+    except:
+        # ถ้า Redis ไม่ทำงาน บันทึกลงไฟล์
+        with open(f"retry_{operation_type}_{datetime.now().strftime('%Y%m%d')}.log", 'a') as f:
+            f.write(json.dumps(data) + '\n')
+
+
+def record_processing_metrics(user_id: str, processing_time: float, used_fallback: bool, had_error: bool):
+    """บันทึก metrics สำหรับการ monitoring"""
+    try:
+        metrics = {
+            'user_id': user_id,
+            'processing_time': processing_time,
+            'used_fallback': used_fallback,
+            'had_error': had_error,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # บันทึกลง Redis สำหรับ real-time monitoring
+        redis_client.lpush('processing_metrics', json.dumps(metrics))
+        redis_client.ltrim('processing_metrics', 0, 9999)  # เก็บแค่ 10,000 รายการล่าสุด
+        
+        # Update aggregated metrics
+        if processing_time > 10:  # Slow response
+            redis_client.incr('metrics:slow_responses')
+        if used_fallback:
+            redis_client.incr('metrics:fallback_used')
+        if had_error:
+            redis_client.incr('metrics:errors_occurred')
+            
+    except:
+        pass  # Metrics เป็น nice-to-have, ไม่ให้กระทบ main flow
+
+
+def notify_admin_critical_error(user_id: str, user_message: str, error: str):
+    """แจ้งเตือน admin เมื่อมี critical error"""
+    # ใช้วิธีที่เหมาะสมกับระบบ เช่น
+    # - ส่งอีเมล
+    # - ส่ง LINE notify
+    # - บันทึกลง monitoring system
+    pass
+
+
+def save_error_for_analysis(error_id: str, user_id: str, user_message: str, error: Exception):
+    """บันทึกข้อผิดพลาดสำหรับการวิเคราะห์"""
+    try:
+        error_data = {
+            'error_id': error_id,
+            'user_id': user_id,
+            'user_message': user_message[:500],  # จำกัดความยาว
+            'error_type': type(error).__name__,
+            'error_message': str(error),
+            'traceback': traceback.format_exc(),
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # บันทึกลง Redis
+        redis_client.hset(f"errors:{datetime.now().strftime('%Y%m%d')}", error_id, json.dumps(error_data))
+        redis_client.expire(f"errors:{datetime.now().strftime('%Y%m%d')}", 604800)  # 7 วัน
+        
+    except:
+        # ถ้าบันทึกไม่ได้ ก็ไม่ต้องทำอะไร
+        pass
+
+
+# Custom Exceptions
+class TokenThresholdExceeded(Exception):
+    """เกิดขึ้นเมื่อโทเค็นเกินขีดจำกัด"""
+    pass
+
+class RateLimitError(Exception):
+    """เกิดขึ้นเมื่อถูก rate limit"""
+    def __init__(self, message: str, retry_after: int = 60):
+        self.retry_after = retry_after
+        super().__init__(message)
+
+
+def send_rate_limit_notification(user_id: str, wait_time: int):
+    """แจ้งผู้ใช้เมื่อถูก rate limit"""
+    try:
+        message = (
+            f"⏳ ขออภัยค่ะ ระบบกำลังประมวลผลหนัก\n"
+            f"กรุณารอประมาณ {wait_time} วินาที แล้วลองใหม่อีกครั้ง\n\n"
+            "ใจดีจะรีบกลับมาคุยกับคุณโดยเร็วที่สุดนะคะ 💚"
+        )
+        line_bot_api.push_message(user_id, TextSendMessage(text=message))
+    except:
+        pass  # ถ้าส่งไม่ได้ก็ไม่เป็นไร
 
 
 def prepare_conversation_context(messages, optimized_history):
@@ -1001,31 +1627,37 @@ def handle_command_with_processing(user_id, command):
         response_text = get_follow_up_status(user_id)
 
     elif command == '/help':
-        response_text = (
-            "สวัสดีค่ะ 👋 ฉันคือน้องใจดี ผู้ช่วยดูแลและให้คำปรึกษาสำหรับผู้ที่ต้องการเลิกใช้สารเสพติด\n\n"
-            "💬 ฉันสามารถช่วยคุณได้ดังนี้:\n"
-            "- พูดคุยและให้กำลังใจในการเลิกใช้สารเสพติด\n"
-            "- ให้ข้อมูลเกี่ยวกับผลกระทบของสารเสพติดต่อร่างกายและจิตใจ\n"
-            "- แนะนำเทคนิคจัดการความอยากและความเครียด\n"
-            "- เชื่อมต่อกับบริการช่วยเหลือในกรณีฉุกเฉิน\n\n"
-            "📋 คำสั่งที่ใช้ได้:\n"
-            "🔑 /verify [รหัส] - ยืนยันการลงทะเบียนด้วยรหัสที่ได้จาก Google Form\n"
-            "📝 /register - ขอข้อมูลการลงทะเบียนและลิงก์กรอกแบบฟอร์ม\n"
-            "📊 /status - ดูสถิติการใช้งานและข้อมูลเซสชัน\n"
-            "📈 /progress - ดูรายงานความก้าวหน้าของคุณ\n"
-            "🔄 /optimize - ปรับปรุงประวัติการสนทนาให้มีประสิทธิภาพ\n"
-            "📈 /tokens - ตรวจสอบการใช้งานโทเค็นในเซสชันปัจจุบัน\n"
-            "🔔 /followup - ตรวจสอบกำหนดการติดตามของคุณ\n"
-            "🚨 /emergency - ดูข้อมูลติดต่อฉุกเฉินและสายด่วน\n"
-            "🔄 /reset - ล้างประวัติการสนทนาและเริ่มต้นใหม่\n"
-            "❓ /help - แสดงเมนูช่วยเหลือนี้\n\n"
-            "💡 ตัวอย่างคำถามที่สามารถถามฉันได้:\n"
-            "- \"ช่วยประเมินการใช้สารเสพติดของฉันหน่อย\"\n"
-            "- \"ผลกระทบของยาบ้าต่อร่างกายมีอะไรบ้าง\"\n"
-            "- \"มีเทคนิคจัดการความอยากยาอย่างไร\"\n"
-            "- \"ฉันควรทำอย่างไรเมื่อรู้สึกอยากกลับไปใช้สารอีก\"\n\n"
-            "เริ่มพูดคุยกับฉันได้เลยนะคะ ฉันพร้อมรับฟังและช่วยเหลือคุณ 💚"
-        )
+    response_text = (
+        "สวัสดีค่ะ 👋 ฉันคือน้องใจดี ผู้ช่วยดูแลและให้คำปรึกษาสำหรับผู้ที่ต้องการเลิกใช้สารเสพติด\n\n"
+        "💬 ฉันสามารถช่วยคุณได้ดังนี้:\n"
+        "- พูดคุยและให้กำลังใจในการเลิกใช้สารเสพติด\n"
+        "- ให้ข้อมูลเกี่ยวกับผลกระทบของสารเสพติดต่อร่างกายและจิตใจ\n"
+        "- แนะนำเทคนิคจัดการความอยากและความเครียด\n"
+        "- เชื่อมต่อกับบริการช่วยเหลือในกรณีฉุกเฉิน\n\n"
+        "📋 คำสั่งที่ใช้ได้:\n"
+        "🔑 /verify [รหัส] - ยืนยันการลงทะเบียนด้วยรหัสที่ได้จาก Google Form\n"
+        "📝 /register - ขอข้อมูลการลงทะเบียนและลิงก์กรอกแบบฟอร์ม\n"
+        "📊 /status - ดูสถิติการใช้งานและข้อมูลเซสชัน\n"
+        "📈 /progress - ดูรายงานความก้าวหน้าของคุณ\n"
+        "🔄 /optimize - ปรับปรุงประวัติการสนทนาให้มีประสิทธิภาพ\n"
+        "📈 /tokens - ตรวจสอบการใช้งานโทเค็นในเซสชันปัจจุบัน\n"
+        "📋 /context - ดูบริบทของคุณจากแบบประเมินที่กรอกไว้\n"
+        "🔔 /followup - ตรวจสอบกำหนดการติดตามของคุณ\n"
+        "🚨 /emergency - ดูข้อมูลติดต่อฉุกเฉินและสายด่วน\n"
+        "💬 /feedback - ส่งความคิดเห็นหรือรายงานปัญหา\n"
+        "🔄 /reset - ล้างประวัติการสนทนาและเริ่มต้นใหม่\n"
+        "❓ /help - แสดงเมนูช่วยเหลือนี้\n\n"
+        "💡 ตัวอย่างคำถามที่สามารถถามฉันได้:\n"
+        "- \"ช่วยประเมินการใช้สารเสพติดของฉันหน่อย\"\n"
+        "- \"ผลกระทบของยาบ้าต่อร่างกายมีอะไรบ้าง\"\n"
+        "- \"มีเทคนิคจัดการความอยากยาอย่างไร\"\n"
+        "- \"ฉันควรทำอย่างไรเมื่อรู้สึกอยากกลับไปใช้สารอีก\"\n\n"
+        "📧 ติดต่อทีมงาน:\n"
+        "หากพบข้อผิดพลาด (บัค) หรือมีข้อเสนอแนะ สามารถติดต่อได้ที่:\n"
+        "• ผู้พัฒนาระบบ: pahnkcn@gmail.com\n"
+        "• ผู้วิจัย: Std6548097@pcm.ac.th\n\n"
+        "เริ่มพูดคุยกับฉันได้เลยนะคะ ฉันพร้อมรับฟังและช่วยเหลือคุณ 💚"
+    )
 
     elif command == '/status':
         history_count = db.get_user_history_count(user_id)
@@ -1081,11 +1713,30 @@ def handle_command_with_processing(user_id, command):
         response_text = (
             "📝 การลงทะเบียนใช้งานน้องใจดี\n\n"
             "เพื่อเริ่มใช้งาน คุณจำเป็นต้องลงทะเบียนก่อน โดยทำตามขั้นตอนดังนี้:\n\n"
-            "1. กรอกแบบฟอร์มที่ลิงก์นี้: https://forms.gle/gVE6WN7W5thHR1kZ9\n"
+            "1. กรอกแบบฟอร์มที่ลิงก์นี้: https://forms.gle/r5MGki6QFtBer2PM8\n"
             "2. หลังกรอกเสร็จ คุณจะได้รับรหัสยืนยัน 6 หลัก\n"
             "3. นำรหัสมาพิมพ์ที่นี่ด้วยคำสั่ง \"/verify รหัส\" เช่น \"/verify 123456\"\n\n"
             "หากมีปัญหาในการลงทะเบียน คุณสามารถติดต่อเจ้าหน้าที่ได้ที่ support@example.com"
         )
+        
+    elif command == '/context':
+        # คำสั่งใหม่: ดูบริบทจากแบบประเมิน
+        context = get_user_context(user_id)
+        
+        if context:
+            response_text = (
+                "📋 บริบทของคุณจากแบบประเมิน:\n\n"
+                f"{context}\n\n"
+                "ใจดีใช้ข้อมูลนี้เพื่อให้คำปรึกษาที่เหมาะสมกับคุณมากที่สุดค่ะ"
+            )
+        else:
+            response_text = (
+                "ไม่พบข้อมูลบริบทจากแบบประเมิน\n"
+                "อาจเป็นเพราะคุณลงทะเบียนก่อนที่ระบบจะมีฟีเจอร์นี้"
+            )
+        
+        send_final_response(user_id, response_text)
+        return
 
     else:
         response_text = "คำสั่งไม่ถูกต้อง ลองพิมพ์ /help เพื่อดูคำสั่งทั้งหมด"
@@ -1147,106 +1798,62 @@ def callback():
 @app.route("/api/add-verification-code", methods=['POST'])
 @limiter.exempt
 def add_verification_code():
-    """API endpoint รับรหัสยืนยันจาก Google Apps Script"""
-
+    """API endpoint รับรหัสยืนยันและข้อมูล form จาก Google Apps Script"""
+    
     # ตรวจสอบการรับรอง API key
     api_key = request.json.get('api_key', '')
     if api_key != os.getenv('FORM_WEBHOOK_KEY', 'your_secret_key_here'):
         return jsonify({"success": False, "error": "Unauthorized"}), 401
-
-    # รับรหัสยืนยันจาก request
+    
+    # รับข้อมูลจาก request
     code = request.json.get('code', '')
+    full_form_data = request.json.get('full_form_data', {})
+    
     if not code or not code.isdigit() or len(code) != 6:
         return jsonify({"success": False, "error": "Invalid verification code"}), 400
-
-    # บันทึกรหัสลงฐานข้อมูล
+    
     try:
         # ตรวจสอบว่ารหัสมีอยู่แล้วหรือไม่
         check_query = 'SELECT code FROM registration_codes WHERE code = %s'
         result = db_manager.execute_query(check_query, (code,))
-
+        
         if result and result[0]:
             return jsonify({"success": False, "error": "Code already exists"}), 409
-
-        # บันทึกรหัสใหม่
-        insert_query = 'INSERT INTO registration_codes (code, created_at, status) VALUES (%s, %s, %s)'
-        db_manager.execute_and_commit(insert_query, (code, datetime.now(), 'pending'))
-
-        logging.info(f"บันทึกรหัสยืนยันใหม่: {code}")
-        return jsonify({"success": True, "message": "Verification code added successfully"}), 201
-
+        
+        # สรุปข้อมูลด้วย AI
+        ai_summary = ""
+        if full_form_data:
+            logging.info(f"กำลังสรุปข้อมูล form สำหรับรหัส: {code}")
+            ai_summary = summarize_form_data(full_form_data)
+        
+        # เตรียมข้อมูลสำหรับบันทึก
+        form_data_json = {
+            "full_data": full_form_data,
+            "ai_summary": ai_summary,
+            "processed_at": datetime.now().isoformat()
+        }
+        
+        # บันทึกรหัสใหม่พร้อมข้อมูล form และสรุป
+        insert_query = '''
+            INSERT INTO registration_codes 
+            (code, created_at, status, form_data) 
+            VALUES (%s, %s, %s, %s)
+        '''
+        db_manager.execute_and_commit(
+            insert_query, 
+            (code, datetime.now(), 'pending', json.dumps(form_data_json))
+        )
+        
+        logging.info(f"บันทึกรหัสยืนยันและข้อมูล form สำเร็จ: {code}")
+        return jsonify({
+            "success": True, 
+            "message": "Verification code and form data saved successfully",
+            "summary_created": bool(ai_summary)
+        }), 201
+        
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการบันทึกรหัสยืนยัน: {str(e)}")
         return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/admin/sync_tokens/<user_id>", methods=['POST'])
-@limiter.exempt  # ยกเว้นการจำกัดอัตรา
-def sync_tokens(user_id):
-    """
-    จุดสิ้นสุดสำหรับผู้ดูแลระบบเพื่อซิงค์โทเค็นระหว่างเซสชันและฐานข้อมูล
-    เพิ่มความสอดคล้องของข้อมูลโทเค็น
-    """
-    if not request.headers.get('X-Admin-Key') == os.getenv('ADMIN_SECRET_KEY'):
-        return jsonify({"error": "Unauthorized"}), 401
-
-    try:
-        # คำนวณโทเค็นทั้งหมดจากฐานข้อมูล
-        total_db_tokens = db.get_total_tokens(user_id) or 0
-
-        # คำนวณโทเค็นในเซสชันปัจจุบัน
-        session_tokens = get_session_token_count(user_id)
-
-        # สร้างบันทึกพิเศษในฐานข้อมูลเพื่อปรับปรุงความแตกต่าง
-        if session_tokens > total_db_tokens:
-            diff = session_tokens - total_db_tokens
-            db.save_conversation(
-                user_id=user_id,
-                user_message="[TOKEN SYNC]",
-                bot_response="[ปรับปรุงความสอดคล้องของโทเค็น]",
-                token_count=diff,
-                important=False
-            )
-            status = "โทเค็นในฐานข้อมูลเพิ่มขึ้น"
-        else:
-            status = "ไม่จำเป็นต้องปรับปรุง"
-
-        return jsonify({
-            "status": status,
-            "before": {
-                "session_tokens": session_tokens,
-                "db_tokens": total_db_tokens
-            },
-            "after": {
-                "session_tokens": session_tokens,
-                "db_tokens": db.get_total_tokens(user_id) or 0
-            }
-        })
-    except Exception as e:
-        logging.error(f"เกิดข้อผิดพลาดในการซิงค์โทเค็น: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/health", methods=['GET'])
-@limiter.exempt  # ไม่ต้องจำกัดการตรวจสอบสุขภาพ
-def health_check():
-    """จุดสิ้นสุดการตรวจสอบสุขภาพสำหรับการตรวจสอบ"""
-    health_status = {
-        "status": "ok",
-        "services": {
-            "redis": check_redis_health(),
-            "mysql": check_mysql_health(),
-            "line_api": check_line_api_health(),
-            "deepseek_api": check_deepseek_api_health()
-        },
-        "uptime": get_uptime(),
-        "version": "1.0.0",
-        "memory_usage": get_memory_usage()
-    }
-
-    # ถ้าบริการใดไม่ทำงาน ให้ส่งคืน 503
-    if not all(health_status["services"].values()):
-        return jsonify(health_status), 503
-
-    return jsonify(health_status)
 
 def check_redis_health():
     """ตรวจสอบการเชื่อมต่อ Redis"""
