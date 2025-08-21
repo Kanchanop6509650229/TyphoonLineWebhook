@@ -15,7 +15,16 @@ from datetime import datetime, timedelta
 from flask import Flask, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, FollowEvent
+from linebot.models import (
+    MessageEvent,
+    TextMessage,
+    TextSendMessage,
+    FollowEvent,
+    QuickReply,
+    QuickReplyButton,
+    MessageAction,
+    URIAction,
+)
 from openai import OpenAI
 import redis
 from random import choice
@@ -25,7 +34,7 @@ from waitress import serve
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # นำเข้าโมดูลภายในโปรเจค
-from .middleware.rate_limiter import init_limiter
+from .middleware.rate_limiter import init_limiter, get_custom_limiter
 from .config import load_config, SYSTEM_MESSAGES, GENERATION_CONFIG, SUMMARY_GENERATION_CONFIG, TOKEN_THRESHOLD
 from .utils import safe_db_operation, safe_api_call, clean_ai_response, handle_deepseek_api_error, check_hospital_inquiry, get_hospital_information_message
 from .chat_history_db import ChatHistoryDB
@@ -145,7 +154,10 @@ except Exception as e:
     raise
 
 # เริ่มต้น rate limiter
-limiter = init_limiter(app)
+try:
+    limiter = get_custom_limiter(redis_client, app)
+except Exception:
+    limiter = init_limiter(app)
 
 # ค่าคงที่ส่วนของการแอพลิเคชัน
 FOLLOW_UP_INTERVALS = [1, 3, 7, 14, 30]  # จำนวนวันในการติดตาม
@@ -523,10 +535,21 @@ def send_registration_message(user_id):
         "• คำถามเกี่ยวกับการวิจัย: Std6548097@pcm.ac.th"
     )
 
-    line_bot_api.push_message(
-        user_id,
-        TextSendMessage(text=register_message)
-    )
+    try:
+        qr = QuickReply(items=[
+            QuickReplyButton(action=URIAction(label="กรอกแบบฟอร์ม", uri="https://forms.gle/gVE6WN7W5thHR1kZ9")),
+            QuickReplyButton(action=MessageAction(label="ฉันมีรหัสแล้ว", text="/verify 123456")),
+            QuickReplyButton(action=MessageAction(label="ดูวิธีใช้งาน", text="/help")),
+        ])
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(text=register_message, quick_reply=qr)
+        )
+    except Exception:
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(text=register_message)
+        )
 
 # ฟังก์ชันที่เกี่ยวข้องกับการล็อคข้อความ
 def is_user_locked(user_id):
@@ -599,6 +622,10 @@ def schedule_follow_up(user_id, interaction_date=None):
             logging.warning(f"ค่า interaction_date ไม่ใช่ประเภท datetime ใช้เวลาปัจจุบันแทน")
             interaction_date = datetime.now()
 
+        # หากผู้ใช้ opt-out หรือ pause ให้ข้าม
+        if redis_client.exists(f"follow_up_opt_out:{user_id}"):
+            logging.info(f"ผู้ใช้ {user_id} เลือกหยุดรับการติดตาม (opt-out)")
+            return
         # บันทึกข้อมูลวันที่เริ่มต้นลงใน Redis (ถ้ายังไม่มี)
         redis_client.setnx(f"first_interaction:{user_id}", interaction_date.timestamp())
 
@@ -635,13 +662,23 @@ def schedule_follow_up(user_id, interaction_date=None):
                 # ถ้าไม่พบค่าใน FOLLOW_UP_INTERVALS หรือเกิดข้อผิดพลาด ให้เริ่มจาก 0
                 next_follow_idx = 0
 
+        # กำหนดชุดช่วงเวลาตามผู้ใช้ (custom) ถ้ามี
+        custom_intervals = redis_client.get(f"follow_up_intervals:{user_id}")
+        intervals = FOLLOW_UP_INTERVALS
+        try:
+            if custom_intervals:
+                import json as _json
+                intervals = [int(d) for d in _json.loads(custom_intervals)]
+        except Exception:
+            intervals = FOLLOW_UP_INTERVALS
+
         # กำหนดการติดตามตามช่วงเวลาที่กำหนด
         current_date = datetime.now()
         scheduled = False
 
         # ลูปเริ่มจากดัชนีที่คำนวณได้ (ไม่ใช่ตั้งแต่ดัชนี 0 เสมอ)
-        for i in range(next_follow_idx, len(FOLLOW_UP_INTERVALS)):
-            days = FOLLOW_UP_INTERVALS[i]
+        for i in range(next_follow_idx, len(intervals)):
+            days = intervals[i]
             follow_up_date = interaction_date + timedelta(days=days)
 
             # กำหนดการติดตามสำหรับวันที่ในอนาคตเท่านั้น
@@ -652,6 +689,11 @@ def schedule_follow_up(user_id, interaction_date=None):
                 )
                 # บันทึกว่าการติดตามล่าสุดคือวันที่เท่าไร
                 redis_client.set(f"last_follow_up:{user_id}", str(days))
+                # บันทึกลงฐานข้อมูล
+                try:
+                    db.set_follow_up_schedule(user_id, follow_up_date)
+                except Exception:
+                    pass
 
                 logging.info(f"กำหนดการติดตามผู้ใช้ {user_id} ในวันที่ {follow_up_date.strftime('%Y-%m-%d')} (+{days} วัน จากวันแรก)")
                 scheduled = True
@@ -688,13 +730,37 @@ def get_follow_up_status(user_id):
                 start_idx = FOLLOW_UP_INTERVALS.index(int(last_follow)) + 1
             except ValueError:
                 start_idx = 0
-        remaining = FOLLOW_UP_INTERVALS[start_idx:]
+        # แสดงช่วงเวลาที่เหลือโดยคำนึงถึง custom intervals
+        custom_intervals = redis_client.get(f"follow_up_intervals:{user_id}")
+        intervals = FOLLOW_UP_INTERVALS
+        try:
+            if custom_intervals:
+                import json as _json
+                intervals = [int(d) for d in _json.loads(custom_intervals)]
+        except Exception:
+            intervals = FOLLOW_UP_INTERVALS
+
+        remaining = intervals[start_idx:]
         remaining_text = ",".join(str(d) for d in remaining) if remaining else "หมดแล้ว"
+
+        paused = bool(redis_client.exists(f"follow_up_paused:{user_id}"))
+        opted_out = bool(redis_client.exists(f"follow_up_opt_out:{user_id}"))
+        snooze_until = redis_client.get(f"follow_up_snooze_until:{user_id}")
+        snooze_text = "-"
+        if snooze_until:
+            try:
+                sdt = datetime.fromtimestamp(float(snooze_until))
+                snooze_text = sdt.strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                snooze_text = "-"
 
         return (
             f"📆 กำหนดการติดตามครั้งถัดไป: {date_text}\n"
             f"⏰ การติดตามครั้งถัดไปจะเริ่มใน {time_text}\n"
-            f"📅 รอบติดตามที่เหลือ: {remaining_text}"
+            f"📅 รอบติดตามที่เหลือ: {remaining_text}\n"
+            f"⏸️ สถานะหยุดชั่วคราว: {'ใช่' if paused else 'ไม่'}\n"
+            f"🚫 ปิดการติดตาม: {'ใช่' if opted_out else 'ไม่'}\n"
+            f"😴 เลื่อนถึง: {snooze_text}"
         )
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการดึงสถานะการติดตามผล: {str(e)}")
@@ -717,6 +783,24 @@ def check_and_send_follow_ups():
             # แปลง bytes เป็ string ถ้าจำเป็น
             if isinstance(user_id, bytes):
                 user_id = user_id.decode('utf-8')
+
+            # ข้ามกรณี opt-out หรือ pause
+            if redis_client.exists(f"follow_up_opt_out:{user_id}"):
+                redis_client.zrem('follow_up_queue', user_id)
+                continue
+            if redis_client.exists(f"follow_up_paused:{user_id}"):
+                continue
+
+            # จัดการ snooze
+            snooze_until = redis_client.get(f"follow_up_snooze_until:{user_id}")
+            if snooze_until:
+                try:
+                    snooze_ts = float(snooze_until if isinstance(snooze_until, str) else snooze_until.decode('utf-8'))
+                    if snooze_ts > current_time:
+                        redis_client.zadd('follow_up_queue', {user_id: snooze_ts})
+                        continue
+                except Exception:
+                    pass
 
             # สร้างข้อความติดตามที่เป็นไปตามบริบทของการสนทนา
             follow_up_message = generate_contextual_followup_message(user_id, db, deepseek_client, config)
@@ -1039,6 +1123,14 @@ def process_user_message(user_id, user_message, reply_token):
 
     # อัพเดทกิจกรรมล่าสุดของผู้ใช้
     update_last_activity(user_id)
+
+    # ตรวจสอบความเสี่ยงสูงและส่ง quick replies หากพบ
+    try:
+        risk_level, matched = assess_risk(user_message)
+        if risk_level == 'high':
+            send_crisis_quick_replies(user_id)
+    except Exception:
+        pass
 
     # ตรวจสอบและจัดการคำสั่ง
     if user_message.startswith('/'):
@@ -1552,6 +1644,20 @@ def send_session_timeout_message(user_id):
         "คุณต้องการพูดคุยเกี่ยวกับเรื่องอะไรดีคะวันนี้?"
     )
     send_final_response(user_id, welcome_back)
+    # ส่งปุ่มลัดเพื่อให้กลับมาใช้งานได้เร็ว
+    try:
+        qr = QuickReply(items=[
+            QuickReplyButton(action=MessageAction(label="เริ่มใหม่", text="สวัสดี")),
+            QuickReplyButton(action=MessageAction(label="สถานะ", text="/status")),
+            QuickReplyButton(action=MessageAction(label="ปรับประวัติ", text="/optimize")),
+            QuickReplyButton(action=MessageAction(label="ฉุกเฉิน", text="/emergency")),
+        ])
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(text="เลือกคำสั่งลัดเพื่อกลับมาคุยต่อได้เลย:", quick_reply=qr)
+        )
+    except Exception:
+        pass
 
 def handle_command_with_processing(user_id, command):
     """จัดการคำสั่งพร้อมแสดงสถานะประมวลผล"""
@@ -1623,8 +1729,61 @@ def handle_command_with_processing(user_id, command):
             f"{'⚠️ ใกล้ถึงขีดจำกัด โปรดใช้ /optimize เพื่อปรับปรุงประวัติ' if percentage > 80 else '✅ อยู่ในเกณฑ์ปกติ'}"
         )
 
-    elif command == '/followup':
-        response_text = get_follow_up_status(user_id)
+    elif command.startswith('/followup'):
+        parts = command.split()
+        if len(parts) == 1 or (len(parts) == 2 and parts[1] == 'status'):
+            response_text = get_follow_up_status(user_id)
+        elif len(parts) >= 2 and parts[1] in ('pause', 'resume', 'stop', 'optout'):
+            action = parts[1]
+            if action == 'pause':
+                redis_client.set(f"follow_up_paused:{user_id}", "1")
+                response_text = "⏸️ หยุดการติดตามชั่วคราวแล้ว คุณสามารถพิมพ์ /followup resume เพื่อเปิดใช้งานอีกครั้ง"
+            elif action in ('stop', 'optout'):
+                redis_client.set(f"follow_up_opt_out:{user_id}", "1")
+                redis_client.zrem('follow_up_queue', user_id)
+                response_text = "🚫 ยกเลิกการติดตามเรียบร้อย จะไม่ส่งข้อความติดตามอีก หากต้องการเปิดใช้งานใหม่ พิมพ์ /followup resume"
+            else:  # resume
+                redis_client.delete(f"follow_up_paused:{user_id}")
+                redis_client.delete(f"follow_up_opt_out:{user_id}")
+                schedule_follow_up(user_id, None)
+                response_text = "▶️ เปิดการติดตามอีกครั้งแล้ว จะมีการติดตามตามกำหนดการ"
+        elif len(parts) >= 3 and parts[1] == 'snooze':
+            try:
+                days = int(parts[2])
+                until_ts = (datetime.now() + timedelta(days=days)).timestamp()
+                redis_client.set(f"follow_up_snooze_until:{user_id}", str(until_ts))
+                # ปรับเลื่อนในคิวถ้าถึงกำหนดแล้ว
+                current_score = redis_client.zscore('follow_up_queue', user_id)
+                if current_score and float(current_score) < until_ts:
+                    redis_client.zadd('follow_up_queue', {user_id: until_ts})
+                response_text = f"😴 เลื่อนการติดตามไปอีก {days} วันแล้ว"
+            except Exception:
+                response_text = "รูปแบบไม่ถูกต้อง ใช้ /followup snooze [จำนวนวัน] เช่น /followup snooze 7"
+        elif len(parts) >= 3 and parts[1] == 'set':
+            try:
+                import json as _json
+                list_str = parts[2]
+                # รองรับคอมมา เช่น 1,3,7 หรือ JSON เช่น [1,3,7]
+                if list_str.startswith('['):
+                    intervals = [int(x) for x in _json.loads(list_str)]
+                else:
+                    intervals = [int(x.strip()) for x in list_str.split(',') if x.strip()]
+                intervals = sorted(set(d for d in intervals if d > 0))
+                redis_client.set(f"follow_up_intervals:{user_id}", _json.dumps(intervals))
+                schedule_follow_up(user_id, None)
+                response_text = f"✅ ตั้งค่าช่วงการติดตามเป็น: {','.join(map(str, intervals))} วัน"
+            except Exception:
+                response_text = "รูปแบบไม่ถูกต้อง ใช้ /followup set [1,3,7] หรือ /followup set 1,3,7"
+        else:
+            response_text = (
+                "การใช้งาน /followup:\n"
+                "• /followup status — ดูสถานะ\n"
+                "• /followup pause — หยุดชั่วคราว\n"
+                "• /followup resume — เปิดใช้งาน\n"
+                "• /followup stop — ยกเลิกการติดตาม\n"
+                "• /followup snooze [วัน] — เลื่อนไปอีก X วัน\n"
+                "• /followup set 1,3,7 — กำหนดช่วงวันติดตาม"
+            )
 
     elif command == '/help':
         response_text = (
@@ -1634,29 +1793,35 @@ def handle_command_with_processing(user_id, command):
             "- ให้ข้อมูลเกี่ยวกับผลกระทบของสารเสพติดต่อร่างกายและจิตใจ\n"
             "- แนะนำเทคนิคจัดการความอยากและความเครียด\n"
             "📋 คำสั่งที่ใช้ได้:\n"
-            "🔑 /verify [รหัส] - ยืนยันการลงทะเบียนด้วยรหัสที่ได้จาก Google Form\n"
-            "📝 /register - ขอข้อมูลการลงทะเบียนและลิงก์กรอกแบบฟอร์ม\n"
-            "📊 /status - ดูสถิติการใช้งานและข้อมูลเซสชัน\n"
-            "📈 /progress - ดูรายงานความก้าวหน้าของคุณ\n"
-            "🔄 /optimize - ปรับปรุงประวัติการสนทนาให้มีประสิทธิภาพ\n"
-            "📈 /tokens - ตรวจสอบการใช้งานโทเค็นในเซสชันปัจจุบัน\n"
-            "📋 /context - ดูบริบทของคุณจากแบบประเมินที่กรอกไว้\n"
-            "🔔 /followup - ตรวจสอบกำหนดการติดตามของคุณ\n"
-            "🚨 /emergency - ดูข้อมูลติดต่อฉุกเฉินและสายด่วน\n"
-            "💬 /feedback - ส่งความคิดเห็นหรือรายงานปัญหา\n"
-            "🔄 /reset - ล้างประวัติการสนทนาและเริ่มต้นใหม่\n"
-            "❓ /help - แสดงเมนูช่วยเหลือนี้\n\n"
+            "🔑 /verify [รหัส] • 📝 /register • 📊 /status • 📈 /progress\n"
+            "🔄 /optimize • 📈 /tokens • 📋 /context • 🔔 /followup • 🚨 /emergency\n"
+            "💬 /feedback • 🔄 /reset • ❓ /help\n\n"
             "💡 ตัวอย่างคำถามที่สามารถถามฉันได้:\n"
             "- \"ช่วยประเมินการใช้สารเสพติดของฉันหน่อย\"\n"
             "- \"ผลกระทบของยาบ้าต่อร่างกายมีอะไรบ้าง\"\n"
             "- \"มีเทคนิคจัดการความอยากยาอย่างไร\"\n"
             "- \"ฉันควรทำอย่างไรเมื่อรู้สึกอยากกลับไปใช้สารอีก\"\n\n"
-            "📧 ติดต่อทีมงาน:\n"
-            "หากพบข้อผิดพลาด (บัค) หรือมีข้อเสนอแนะ สามารถติดต่อได้ที่:\n"
-            "🔧 ผู้พัฒนาระบบ: pahnkcn@gmail.com\n"
-            "📖 ผู้วิจัย: Std6548097@pcm.ac.th\n\n"
-            "เริ่มพูดคุยกับฉันได้เลยนะคะ ฉันพร้อมรับฟังและช่วยเหลือคุณ 💚"
+            "📧 ติดต่อทีมงาน: pahnkcn@gmail.com, Std6548097@pcm.ac.th\n"
+            "เริ่มคุยกับฉันได้เลยนะคะ 💚"
         )
+        # ส่งข้อความหลัก
+        send_final_response(user_id, response_text)
+        # ส่ง Quick Reply เสริม
+        try:
+            qr = QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="สถานะ", text="/status")),
+                QuickReplyButton(action=MessageAction(label="ติดตาม", text="/followup status")),
+                QuickReplyButton(action=MessageAction(label="ปรับประวัติ", text="/optimize")),
+                QuickReplyButton(action=MessageAction(label="โทเค็น", text="/tokens")),
+                QuickReplyButton(action=MessageAction(label="ฉุกเฉิน", text="/emergency")),
+            ])
+            line_bot_api.push_message(
+                user_id,
+                TextSendMessage(text="เลือกคำสั่งลัดที่ต้องการใช้งาน:", quick_reply=qr)
+            )
+        except Exception:
+            pass
+        return
 
     elif command == '/status':
         history_count = db.get_user_history_count(user_id)
@@ -1685,20 +1850,30 @@ def handle_command_with_processing(user_id, command):
     elif command == '/emergency':
         response_text = (
             "🚨 บริการช่วยเหลือฉุกเฉิน 🚨\n\n"
-            "หากคุณหรือคนใกล้ตัวกำลังประสบปัญหาต่อไปนี้:\n"
-            "- ใช้สารเสพติดเกินขนาด (Overdose)\n"
-            "- มีอาการชัก เลือดออก หมดสติ\n"
-            "- มีความคิดทำร้ายตัวเอง\n"
-            "- มีอาการถอนยารุนแรง\n\n"
-            "📞 ติดต่อขอความช่วยเหลือด่วนได้ที่:\n"
-            "🔸 สายด่วนกรมควบคุมโรค: 1422\n"
-            "🔸 ศูนย์ปรึกษาปัญหายาเสพติด: 1165\n"
-            "🔸 หน่วยกู้ชีพฉุกเฉิน: 1669\n"
-            "🔸 สายด่วนสุขภาพจิต: 1323\n\n"
-            "🌐 เว็บไซต์ช่วยเหลือ:\n"
-            "https://www.pmnidat.go.th\n\n"
-            "💚 การขอความช่วยเหลือคือก้าวแรกของการดูแลตัวเอง"
+            "ถ้าคุณหรือคนใกล้ตัวอยู่ในภาวะฉุกเฉิน:\n"
+            "• เกินขนาด/หมดสติ/ชัก/เลือดออก\n"
+            "• มีความคิดทำร้ายตัวเอง\n\n"
+            "ติดต่อด่วน:\n"
+            "• 1669 หน่วยกู้ชีพ\n"
+            "• 1323 สายด่วนสุขภาพจิต\n\n"
+            "ข้อมูลเพิ่มเติม: https://www.pmnidat.go.th\n"
+            "คุณไม่ได้อยู่คนเดียว ใจดีอยู่ตรงนี้เสมอ 💚"
         )
+        send_final_response(user_id, response_text)
+        try:
+            qr = QuickReply(items=[
+                QuickReplyButton(action=URIAction(label="โทร 1669", uri="tel:1669")),
+                QuickReplyButton(action=URIAction(label="โทร 1323", uri="tel:1323")),
+                QuickReplyButton(action=MessageAction(label="ฉันปลอดภัย", text="ฉันปลอดภัยตอนนี้")),
+                QuickReplyButton(action=MessageAction(label="ข้อมูลสถานพยาบาล", text="ขอข้อมูลสถานพยาบาลใกล้ตัว")),
+            ])
+            line_bot_api.push_message(
+                user_id,
+                TextSendMessage(text="ช่องทางด่วน:", quick_reply=qr)
+            )
+        except Exception:
+            pass
+        return
 
     elif command == '/progress':
         report = generate_progress_report(user_id)
@@ -1795,7 +1970,7 @@ def callback():
     return 'OK'
 
 @app.route("/api/add-verification-code", methods=['POST'])
-@limiter.exempt
+@limiter.limit("30/hour")
 def add_verification_code():
     """API endpoint รับรหัสยืนยันและข้อมูล form จาก Google Apps Script"""
     
@@ -1881,6 +2056,35 @@ def health():
     except Exception as e:
         logging.error(f"Health endpoint error: {str(e)}")
         return jsonify({"status": "error", "error": str(e)}), 500
+
+
+# Minimal metrics endpoint (non-sensitive aggregate counters)
+@app.route("/metrics", methods=["GET"])
+@limiter.limit("120/hour")
+def metrics():
+    try:
+        def get_int(key):
+            try:
+                val = redis_client.get(key)
+                if isinstance(val, bytes):
+                    val = val.decode('utf-8')
+                return int(val or 0)
+            except Exception:
+                return 0
+
+        data = {
+            "env": config.ENVIRONMENT,
+            "slow_responses": get_int('metrics:slow_responses'),
+            "fallback_used": get_int('metrics:fallback_used'),
+            "errors_occurred": get_int('metrics:errors_occurred'),
+            "processing_metrics_size": redis_client.llen('processing_metrics') if redis_client else 0,
+            "follow_up_queue": redis_client.zcard('follow_up_queue') if redis_client else 0,
+            "time": datetime.now().isoformat(),
+        }
+        return jsonify(data), 200
+    except Exception as e:
+        logging.error(f"Metrics endpoint error: {str(e)}")
+        return jsonify({"error": "metrics_unavailable"}), 503
 
 def check_redis_health():
     """ตรวจสอบการเชื่อมต่อ Redis"""
@@ -2029,6 +2233,82 @@ def handle_message(event):
     finally:
         unlock_user(user_id)
 
+def send_crisis_quick_replies(user_id: str):
+    """ส่ง quick replies สำหรับสถานการณ์เสี่ยงสูง"""
+    try:
+        qr = QuickReply(items=[
+            QuickReplyButton(action=URIAction(label="โทร 1323", uri="tel:1323")),
+            QuickReplyButton(action=MessageAction(label="ฉันปลอดภัย", text="ฉันปลอดภัยตอนนี้")),
+            QuickReplyButton(action=MessageAction(label="ต้องการผู้ช่วย", text="/emergency")),
+        ])
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(
+                text=(
+                    "ใจดีเป็นห่วงความปลอดภัยของคุณค่ะ\n"
+                    "ถ้าต้องการความช่วยเหลือด่วน แนะนำให้โทร 1323 หรือ 1669 ทันที\n"
+                    "ถ้าคุณปลอดภัยแล้วกดที่ปุ่มด้านล่างได้เลยค่ะ"
+                ),
+                quick_reply=qr,
+            ),
+        )
+    except Exception:
+        pass
+
+def drain_retry_queues(max_items: int = 50):
+    """Drain retry queues for redis/db operations with backoff limits."""
+    try:
+        processed = 0
+        for qname in ("retry_queue:redis_save", "retry_queue:db_save"):
+            while processed < max_items:
+                item = redis_client.rpop(qname)
+                if not item:
+                    break
+                try:
+                    import json as _json
+                    payload = _json.loads(item)
+                    data = payload.get('data', {})
+                    attempts = int(payload.get('attempts', 0))
+                    if attempts > 5:
+                        continue  # drop poison message
+                    if qname.endswith('redis_save'):
+                        messages = data.get('messages') or []
+                        uid = data.get('user_id')
+                        if uid and messages:
+                            save_chat_session(uid, messages)
+                    else:
+                        uid = data.get('user_id')
+                        umsg = data.get('user_message', '')
+                        bresp = data.get('bot_response', '')
+                        if uid and (umsg or bresp):
+                            tkn = token_counter.count_tokens((umsg or '') + (bresp or ''))
+                            risk, kws = assess_risk(umsg or '')
+                            db.save_conversation(uid, umsg, bresp, tkn, is_important_message(umsg, bresp))
+                            save_progress_data(uid, risk, kws)
+                    processed += 1
+                except Exception:
+                    # push back with incremented attempts
+                    try:
+                        import json as _json
+                        payload = _json.loads(item)
+                        payload['attempts'] = int(payload.get('attempts', 0)) + 1
+                        redis_client.lpush(qname, _json.dumps(payload))
+                    except Exception:
+                        pass
+    except Exception as e:
+        logging.error(f"Retry queue drain error: {str(e)}")
+
+def expire_pending_registration_codes(hours: int = 48):
+    """Expire registration codes older than given hours with status pending."""
+    try:
+        query = (
+            "UPDATE registration_codes SET status = 'expired' "
+            "WHERE status = 'pending' AND created_at < (NOW() - INTERVAL %s HOUR)"
+        )
+        db_manager.execute_and_commit(query, (hours,))
+    except Exception as e:
+        logging.error(f"Expire codes job error: {str(e)}")
+
 @handler.add(FollowEvent)
 def handle_follow(event):
     user_id = event.source.user_id
@@ -2040,10 +2320,21 @@ def handle_follow(event):
         "👉 ก่อนเริ่มต้นใช้งาน กรุณาลงทะเบียนตามขั้นตอนง่ายๆ"
     )
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=welcome_message)
-    )
+    try:
+        qr = QuickReply(items=[
+            QuickReplyButton(action=URIAction(label="ลงทะเบียน", uri="https://forms.gle/gVE6WN7W5thHR1kZ9")),
+            QuickReplyButton(action=MessageAction(label="ฉันมีรหัสแล้ว", text="/verify 123456")),
+            QuickReplyButton(action=MessageAction(label="ดูวิธีใช้งาน", text="/help")),
+        ])
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=welcome_message, quick_reply=qr)
+        )
+    except Exception:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=welcome_message)
+        )
 
     # ส่งข้อความลงทะเบียนแบบ push message เพื่อให้แน่ใจว่าผู้ใช้ได้รับ
     send_registration_message(user_id)
@@ -2054,6 +2345,8 @@ scheduler = BackgroundScheduler()
 # เพิ่มงานตัวกำหนดการ
 def init_scheduler():
     scheduler.add_job(check_and_send_follow_ups, 'interval', minutes=30)
+    scheduler.add_job(drain_retry_queues, 'interval', minutes=5)
+    scheduler.add_job(expire_pending_registration_codes, 'cron', hour=3)
     scheduler.start()
     logging.info("ตัวกำหนดการเริ่มต้นแล้ว ตรวจสอบการติดตามทุก 30 นาที")
 

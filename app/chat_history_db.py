@@ -368,3 +368,36 @@ class ChatHistoryDB:
         except Exception as e:
             logging.error(f"Error updating follow-up status: {str(e)}")
             raise
+
+    @safe_db_operation
+    def set_follow_up_schedule(self, user_id: str, scheduled_date: datetime) -> bool:
+        """
+        Upsert a follow-up schedule row for the user with status 'scheduled'.
+
+        Args:
+            user_id: LINE User ID
+            scheduled_date: Datetime for the next follow-up
+
+        Returns:
+            bool: True if success
+        """
+        try:
+            # Check if a follow_up row exists
+            check_query = 'SELECT id FROM follow_ups WHERE user_id = %s LIMIT 1'
+            result = self.db.execute_query(check_query, (user_id,))
+
+            now = datetime.now()
+            if result and result[0]:
+                update_query = 'UPDATE follow_ups SET status = %s, updated_at = %s, scheduled_date = %s WHERE id = %s'
+                self.db.execute_and_commit(update_query, ('scheduled', now, scheduled_date, result[0][0]))
+            else:
+                insert_query = '''
+                    INSERT INTO follow_ups (user_id, status, created_at, updated_at, scheduled_date)
+                    VALUES (%s, %s, %s, %s, %s)
+                '''
+                self.db.execute_and_commit(insert_query, (user_id, 'scheduled', now, now, scheduled_date))
+
+            return True
+        except Exception as e:
+            logging.error(f"Error setting follow-up schedule: {str(e)}")
+            raise

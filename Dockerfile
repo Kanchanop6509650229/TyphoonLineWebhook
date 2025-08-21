@@ -31,5 +31,5 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # สลับไปยังผู้ใช้ที่ไม่ใช่รูท
 USER appuser
 
-# คำสั่งเพื่อรันแอปพลิเคชัน
-CMD ["python", "wsgi.py"]
+# คำสั่งเพื่อรันแอปพลิเคชันด้วย Gunicorn (production)
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:5000", "wsgi:application"]
