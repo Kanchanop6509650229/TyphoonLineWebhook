@@ -74,6 +74,43 @@ class ChatHistoryDB:
             return []
 
     @safe_db_operation
+    def get_recent_conversations(self, user_id: str, limit: int = 10) -> List[Tuple]:
+        """
+        ดึงคู่สนทนาล่าสุดตามจำนวนที่ระบุ (เรียงจากเก่า -> ใหม่ เพื่อคงลำดับบริบท)
+
+        Args:
+            user_id: LINE User ID
+            limit: จำนวนคู่สนทนาล่าสุด (1 คู่ = ผู้ใช้ 1 ข้อความ + บอท 1 ข้อความ)
+
+        Returns:
+            List[Tuple]: รายการ [(id, user_message, bot_response), ...]
+        """
+        # ป้องกันค่า limit ผิดปกติ
+        try:
+            limit_int = max(1, min(int(limit), 50))
+        except Exception:
+            limit_int = 10
+
+        # ใช้ ORDER BY timestamp DESC แล้วค่อย reverse เพื่อได้เก่า -> ใหม่
+        query = f'''
+            SELECT c.id, c.timestamp, c.user_message, c.bot_response
+            FROM conversations c
+            WHERE c.user_id = %s
+            ORDER BY c.timestamp DESC
+            LIMIT {limit_int}
+        '''
+
+        try:
+            rows = self.db.execute_query(query, (user_id,))
+            # แปลงเป็น (id, user_message, bot_response) และ reverse ลำดับ
+            pairs = [(r[0], r[2], r[3]) for r in rows]
+            pairs.reverse()
+            return pairs
+        except Exception as e:
+            logging.error(f"Error retrieving recent conversations: {str(e)}")
+            return []
+
+    @safe_db_operation
     def save_conversation(self, user_id: str, user_message: str, bot_response: str,
                          token_count: int = 0, important: bool = None) -> bool:
         """

@@ -210,13 +210,31 @@ def hybrid_context_management(user_id: str, token_threshold: int) -> List[Dict[s
         return current_history
 
 
-def generate_contextual_followup_message(user_id: str, db, deepseek_client, config):
-    """สร้างข้อความติดตามที่เป็นไปตามบริบทของการสนทนาล่าสุดโดยใช้ DeepSeek AI"""
+def generate_contextual_followup_message(user_id: str, db, deepseek_client, config, message_limit: int = 20):
+    """
+    สร้างข้อความติดตามที่อิงบริบทการสนทนาล่าสุดโดยใช้ DeepSeek AI
+
+    Args:
+        user_id: LINE User ID
+        db: ตัวจัดการฐานข้อมูล (ต้องมีเมธอด get_recent_conversations)
+        deepseek_client: ไคลเอนต์ DeepSeek/OpenAI ที่กำหนดค่าแล้ว
+        config: การตั้งค่าระบบที่มีโมเดลและพารามิเตอร์
+        message_limit: จำนวน "ข้อความ" ล่าสุดที่จะใช้เป็นบริบท (เช่น 20 ข้อความ = ~10 คู่สนทนา)
+    """
     from .utils import safe_api_call, clean_ai_response
     
     try:
-        # ดึงประวัติการสนทนาล่าสุด 10 ครั้ง
-        recent_history = db.get_user_history(user_id, limit=10)
+        # ดึงประวัติการสนทนาล่าสุดตามจำนวนข้อความที่ต้องการ
+        # 1 คู่สนทนา (ผู้ใช้ + ใจดี) = 2 ข้อความ => ปัดขึ้นเพื่อให้ครอบคลุม message_limit
+        pair_limit = max(1, (int(message_limit) + 1) // 2)
+
+        # ใช้วิธีดึงคู่สนทนาล่าสุดจากฐานข้อมูลโดยตรง (เรียงจากเก่า -> ใหม่)
+        # หมายเหตุ: หากไม่มีเมธอดนี้ใน db จะ fallback แบบปลอดภัยด้านล่าง
+        try:
+            recent_history = db.get_recent_conversations(user_id, limit=pair_limit)
+        except Exception:
+            # fallback: ใช้วิธีเดิม (อาจไม่เหมาะเพราะพารามิเตอร์ต่างชนิด)
+            recent_history = []
         
         # ถ้าไม่มีประวัติการสนทนา ใช้ข้อความติดตามทั่วไป
         if not recent_history:
@@ -229,7 +247,7 @@ def generate_contextual_followup_message(user_id: str, db, deepseek_client, conf
         
         # สร้าง prompt สำหรับ DeepSeek
         followup_prompt = f"""
-ต่อไปนี้คือประวัติการสนทนาล่าสุด 10 ครั้งระหว่างผู้ใช้และแชทบอท "ใจดี" ที่ช่วยเหลือคนเลิกสารเสพติด:
+ต่อไปนี้คือประวัติการสนทนาล่าสุด {message_limit} ข้อความ (ประมาณ {pair_limit} คู่โต้ตอบ) ระหว่างผู้ใช้และแชทบอท "ใจดี" ที่ช่วยเหลือคนเลิกสารเสพติด:
 
 {conversation_context}
 
