@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime
 from typing import List, Dict, Tuple
+from linebot.models import TextSendMessage
 
 redis_client = None
 line_bot_api = None
@@ -158,9 +159,17 @@ def is_important_message(user_message: str, bot_response: str) -> bool:
     return False
 
 
-def hybrid_context_management(user_id: str, token_threshold: int) -> List[Dict[str, str]]:
+def hybrid_context_management(user_id: str, token_threshold: int = None) -> List[Dict[str, str]]:
     """Manage conversation history to fit within the context window."""
     try:
+        # Resolve token threshold lazily to avoid circular imports
+        if token_threshold is None:
+            try:
+                from .config import TOKEN_THRESHOLD as DEFAULT_THRESHOLD
+                token_threshold = int(DEFAULT_THRESHOLD)
+            except Exception:
+                token_threshold = 55000  # sensible fallback
+
         current_history = get_chat_session(user_id)
         if not current_history:
             return []

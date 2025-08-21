@@ -1854,6 +1854,34 @@ def add_verification_code():
         logging.error(f"เกิดข้อผิดพลาดในการบันทึกรหัสยืนยัน: {str(e)}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+
+# Health check endpoint
+@app.route("/health", methods=["GET"])
+@limiter.limit("60/hour")
+def health():
+    try:
+        redis_ok = check_redis_health()
+        mysql_ok = check_mysql_health()
+        line_ok = check_line_api_health()
+        deepseek_ok = check_deepseek_api_health()
+
+        status = {
+            "status": "ok" if all([redis_ok, mysql_ok, line_ok, deepseek_ok]) else "degraded",
+            "services": {
+                "redis": redis_ok,
+                "mysql": mysql_ok,
+                "line_api": line_ok,
+                "deepseek_api": deepseek_ok,
+            },
+            "uptime": get_uptime(),
+            "memory": get_memory_usage(),
+            "environment": config.ENVIRONMENT,
+        }
+        return jsonify(status), 200 if status["status"] == "ok" else 503
+    except Exception as e:
+        logging.error(f"Health endpoint error: {str(e)}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
 def check_redis_health():
     """ตรวจสอบการเชื่อมต่อ Redis"""
     try:

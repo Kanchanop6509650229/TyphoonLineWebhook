@@ -119,6 +119,7 @@ logs/*.log
 *.db
 *.sqlite
 .DS_Store
+ngrok*
 
 # IDE specific files
 .idea/
