@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TyphoonLineWebhook Analytics Dashboard</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- Plotly.js -->
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <!-- Socket.IO -->
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    
+    <style>
+        .dashboard-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 0;
+        }
+        
+        .metric-card {
+            transition: transform 0.2s;
+            border: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+        
+        .metric-value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .metric-label {
+            color: #666;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        
+        .status-healthy { background-color: #28a745; }
+        .status-warning { background-color: #ffc107; }
+        .status-critical { background-color: #dc3545; }
+        
+        .chart-container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .sidebar {
+            background-color: #f8f9fa;
+            min-height: calc(100vh - 80px);
+            padding: 20px;
+        }
+        
+        .nav-link {
+            color: #333;
+            padding: 10px 15px;
+            margin: 5px 0;
+            border-radius: 5px;
+            transition: background-color 0.2s;
+        }
+        
+        .nav-link:hover, .nav-link.active {
+            background-color: #e9ecef;
+            color: #495057;
+        }
+        
+        .alert-item {
+            border-left: 4px solid #dc3545;
+            background-color: #f8d7da;
+            border-color: #f5c6cb;
+        }
+        
+        .loading-spinner {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        @media (max-width: 768px) {
+            .sidebar {
+                min-height: auto;
+                margin-bottom: 20px;
+            }
+            
+            .metric-value {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="dashboard-header">
+        <div class="container">
+            <div class="row align-items-center">
+                <div class="col-md-6">
+                    <h1 class="mb-0">
+                        <i class="fas fa-chart-line me-3"></i>
+                        TyphoonLineWebhook Analytics
+                    </h1>
+                    <p class="mb-0 mt-2">Real-time system monitoring and user engagement insights</p>
+                </div>
+                <div class="col-md-6 text-md-end">
+                    <div class="d-flex align-items-center justify-content-md-end">
+                        <span class="status-indicator status-healthy"></span>
+                        <span id="connection-status">Connected</span>
+                        <small class="ms-3 text-light" id="last-update">Last updated: --</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <div class="col-md-2 sidebar">
+                <nav class="nav flex-column">
+                    <a class="nav-link active" href="#overview" data-section="overview">
+                        <i class="fas fa-tachometer-alt me-2"></i>Overview
+                    </a>
+                    <a class="nav-link" href="#users" data-section="users">
+                        <i class="fas fa-users me-2"></i>User Analytics
+                    </a>
+                    <a class="nav-link" href="#system" data-section="system">
+                        <i class="fas fa-server me-2"></i>System Performance
+                    </a>
+                    <a class="nav-link" href="#risk" data-section="risk">
+                        <i class="fas fa-exclamation-triangle me-2"></i>Risk Assessment
+                    </a>
+                    <a class="nav-link" href="#alerts" data-section="alerts">
+                        <i class="fas fa-bell me-2"></i>Alerts
+                    </a>
+                </nav>
+                
+                <div class="mt-4">
+                    <h6 class="text-muted">Quick Actions</h6>
+                    <button class="btn btn-sm btn-outline-primary w-100 mb-2" onclick="refreshData()">
+                        <i class="fas fa-sync-alt me-1"></i>Refresh Data
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary w-100" onclick="exportReport()">
+                        <i class="fas fa-download me-1"></i>Export Report
+                    </button>
+                </div>
+            </div>
+
+            <!-- Main Content -->
+            <div class="col-md-10">
+                <!-- Overview Section -->
+                <div id="overview-section" class="dashboard-section">
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <h3 class="mb-4">System Overview</h3>
+                        </div>
+                    </div>
+
+                    <!-- Key Metrics Cards -->
+                    <div class="row mb-4">
+                        <div class="col-lg-3 col-md-6 mb-3">
+                            <div class="card metric-card h-100">
+                                <div class="card-body text-center">
+                                    <div class="metric-value" id="total-users">--</div>
+                                    <div class="metric-label">Total Users</div>
+                                    <small class="text-muted">
+                                        <i class="fas fa-arrow-up text-success"></i>
+                                        <span id="new-users-today">--</span> new today
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-lg-3 col-md-6 mb-3">
+                            <div class="card metric-card h-100">
+                                <div class="card-body text-center">
+                                    <div class="metric-value" id="active-users-24h">--</div>
+                                    <div class="metric-label">Active Users (24h)</div>
+                                    <small class="text-muted">
+                                        <span id="retention-rate">--</span>% retention rate
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-lg-3 col-md-6 mb-3">
+                            <div class="card metric-card h-100">
+                                <div class="card-body text-center">
+                                    <div class="metric-value" id="system-health">
+                                        <i class="fas fa-heart text-success"></i>
+                                    </div>
+                                    <div class="metric-label">System Health</div>
+                                    <small class="text-muted" id="health-status">All systems operational</small>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-lg-3 col-md-6 mb-3">
+                            <div class="card metric-card h-100">
+                                <div class="card-body text-center">
+                                    <div class="metric-value" id="response-time">--ms</div>
+                                    <div class="metric-label">Avg Response Time</div>
+                                    <small class="text-muted">
+                                        <span id="cpu-usage">--</span>% CPU usage
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Charts Row -->
+                    <div class="row">
+                        <div class="col-lg-8 mb-4">
+                            <div class="chart-container">
+                                <h5 class="mb-3">User Engagement Trends</h5>
+                                <div id="user-engagement-chart" class="loading-spinner">
+                                    <div class="spinner-border" role="status"></div>
+                                    <p>Loading chart...</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-lg-4 mb-4">
+                            <div class="chart-container">
+                                <h5 class="mb-3">Risk Distribution</h5>
+                                <div id="risk-distribution-chart" class="loading-spinner">
+                                    <div class="spinner-border" role="status"></div>
+                                    <p>Loading chart...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Performance Section -->
+                <div id="system-section" class="dashboard-section" style="display: none;">
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <h3 class="mb-4">System Performance</h3>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-lg-6 mb-4">
+                            <div class="chart-container">
+                                <h5 class="mb-3">CPU Usage</h5>
+                                <div id="cpu-gauge"></div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-lg-6 mb-4">
+                            <div class="chart-container">
+                                <h5 class="mb-3">Memory Usage</h5>
+                                <div id="memory-gauge"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-lg-6 mb-4">
+                            <div class="chart-container">
+                                <h5 class="mb-3">Database Pool Usage</h5>
+                                <div id="db-pool-gauge"></div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-lg-6 mb-4">
+                            <div class="chart-container">
+                                <h5 class="mb-3">Cache Hit Rate</h5>
+                                <div id="cache-gauge"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Alerts Section -->
+                <div id="alerts-section" class="dashboard-section" style="display: none;">
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <h3 class="mb-4">Active Alerts</h3>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-12">
+                            <div id="alerts-container">
+                                <div class="alert alert-info">
+                                    <i class="fas fa-info-circle me-2"></i>
+                                    No active alerts. System is running normally.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        // Global variables
+        let socket;
+        let currentSection = 'overview';
+        
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeSocket();
+            setupNavigation();
+            loadInitialData();
+        });
+        
+        // Socket.IO connection
+        function initializeSocket() {
+            socket = io();
+            
+            socket.on('connect', function() {
+                updateConnectionStatus('Connected', 'healthy');
+                socket.emit('request_metrics');
+            });
+            
+            socket.on('disconnect', function() {
+                updateConnectionStatus('Disconnected', 'critical');
+            });
+            
+            socket.on('metrics_update', function(data) {
+                updateDashboard(data);
+                updateLastUpdateTime();
+            });
+        }
+        
+        // Navigation setup
+        function setupNavigation() {
+            document.querySelectorAll('.nav-link').forEach(link => {
+                link.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const section = this.dataset.section;
+                    showSection(section);
+                    
+                    // Update active nav item
+                    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+                    this.classList.add('active');
+                });
+            });
+        }
+        
+        // Show specific section
+        function showSection(section) {
+            // Hide all sections
+            document.querySelectorAll('.dashboard-section').forEach(s => {
+                s.style.display = 'none';
+            });
+            
+            // Show selected section
+            const sectionElement = document.getElementById(section + '-section');
+            if (sectionElement) {
+                sectionElement.style.display = 'block';
+                currentSection = section;
+                
+                // Load section-specific data
+                loadSectionData(section);
+            }
+        }
+        
+        // Load initial data
+        function loadInitialData() {
+            fetch('/api/metrics')
+                .then(response => response.json())
+                .then(data => {
+                    updateDashboard(data);
+                })
+                .catch(error => {
+                    console.error('Error loading initial data:', error);
+                });
+        }
+        
+        // Load section-specific data
+        function loadSectionData(section) {
+            switch(section) {
+                case 'users':
+                    loadUserEngagementChart();
+                    break;
+                case 'system':
+                    loadSystemPerformanceCharts();
+                    break;
+                case 'risk':
+                    loadRiskAnalytics();
+                    break;
+                case 'alerts':
+                    loadActiveAlerts();
+                    break;
+            }
+        }
+        
+        // Update dashboard with new data
+        function updateDashboard(data) {
+            if (data.user_engagement) {
+                updateUserMetrics(data.user_engagement);
+            }
+            
+            if (data.system_performance) {
+                updateSystemMetrics(data.system_performance);
+            }
+            
+            // Update charts if we're on overview
+            if (currentSection === 'overview') {
+                updateOverviewCharts(data);
+            }
+        }
+        
+        // Update user metrics
+        function updateUserMetrics(userMetrics) {
+            document.getElementById('total-users').textContent = userMetrics.total_users || '--';
+            document.getElementById('active-users-24h').textContent = userMetrics.active_users_24h || '--';
+            document.getElementById('new-users-today').textContent = userMetrics.new_users_today || '--';
+            document.getElementById('retention-rate').textContent = (userMetrics.retention_rate_7d || 0).toFixed(1);
+        }
+        
+        // Update system metrics
+        function updateSystemMetrics(systemMetrics) {
+            document.getElementById('cpu-usage').textContent = (systemMetrics.cpu_usage || 0).toFixed(1);
+            
+            // Update response time (mock data for now)
+            document.getElementById('response-time').textContent = (systemMetrics.avg_response_time * 1000 || 0).toFixed(0);
+            
+            // Update system health based on metrics
+            const cpuHigh = systemMetrics.cpu_usage > 80;
+            const memoryHigh = systemMetrics.memory_usage > 80;
+            
+            if (cpuHigh || memoryHigh) {
+                updateSystemHealth('warning', 'System under load');
+            } else {
+                updateSystemHealth('healthy', 'All systems operational');
+            }
+        }
+        
+        // Update system health indicator
+        function updateSystemHealth(status, message) {
+            const healthElement = document.getElementById('system-health');
+            const statusElement = document.getElementById('health-status');
+            
+            // Clear existing classes
+            healthElement.innerHTML = '';
+            
+            switch(status) {
+                case 'healthy':
+                    healthElement.innerHTML = '<i class="fas fa-heart text-success"></i>';
+                    break;
+                case 'warning':
+                    healthElement.innerHTML = '<i class="fas fa-exclamation-triangle text-warning"></i>';
+                    break;
+                case 'critical':
+                    healthElement.innerHTML = '<i class="fas fa-times-circle text-danger"></i>';
+                    break;
+            }
+            
+            statusElement.textContent = message;
+        }
+        
+        // Update connection status
+        function updateConnectionStatus(status, level) {
+            const statusElement = document.getElementById('connection-status');
+            const indicatorElement = document.querySelector('.status-indicator');
+            
+            statusElement.textContent = status;
+            
+            // Update indicator color
+            indicatorElement.className = 'status-indicator';
+            indicatorElement.classList.add('status-' + level);
+        }
+        
+        // Update last update time
+        function updateLastUpdateTime() {
+            const now = new Date();
+            document.getElementById('last-update').textContent = 
+                'Last updated: ' + now.toLocaleTimeString();
+        }
+        
+        // Load user engagement chart
+        function loadUserEngagementChart() {
+            fetch('/api/charts/user_engagement')
+                .then(response => response.json())
+                .then(chartData => {
+                    const container = document.getElementById('user-engagement-chart');
+                    container.innerHTML = '';
+                    container.classList.remove('loading-spinner');
+                    Plotly.newPlot('user-engagement-chart', chartData.data, chartData.layout);
+                })
+                .catch(error => {
+                    console.error('Error loading user engagement chart:', error);
+                });
+        }
+        
+        // Load system performance charts
+        function loadSystemPerformanceCharts() {
+            fetch('/api/charts/system_performance')
+                .then(response => response.json())
+                .then(gauges => {
+                    if (gauges.length >= 4) {
+                        Plotly.newPlot('cpu-gauge', gauges[0].data, gauges[0].layout);
+                        Plotly.newPlot('memory-gauge', gauges[1].data, gauges[1].layout);
+                        Plotly.newPlot('db-pool-gauge', gauges[3].data, gauges[3].layout);
+                        
+                        // Mock cache gauge for now
+                        const cacheGauge = {
+                            data: [{
+                                type: "indicator",
+                                mode: "gauge+number",
+                                value: 85,
+                                title: { text: "Cache Hit Rate (%)" },
+                                gauge: {
+                                    axis: { range: [null, 100] },
+                                    bar: { color: "darkblue" },
+                                    steps: [
+                                        { range: [0, 70], color: "lightgray" },
+                                        { range: [70, 90], color: "yellow" },
+                                        { range: [90, 100], color: "green" }
+                                    ]
+                                }
+                            }],
+                            layout: { height: 300 }
+                        };
+                        Plotly.newPlot('cache-gauge', cacheGauge.data, cacheGauge.layout);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading system performance charts:', error);
+                });
+        }
+        
+        // Update overview charts
+        function updateOverviewCharts(data) {
+            // Update user engagement chart
+            if (data.user_engagement) {
+                const chartData = {
+                    data: [{
+                        x: ['Total Users', 'Active 24h', 'Active 7d', 'New Today'],
+                        y: [
+                            data.user_engagement.total_users,
+                            data.user_engagement.active_users_24h,
+                            data.user_engagement.active_users_7d,
+                            data.user_engagement.new_users_today
+                        ],
+                        type: 'bar',
+                        marker: { color: ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'] }
+                    }],
+                    layout: {
+                        title: 'User Engagement Metrics',
+                        height: 400
+                    }
+                };
+                
+                const container = document.getElementById('user-engagement-chart');
+                container.classList.remove('loading-spinner');
+                Plotly.newPlot('user-engagement-chart', chartData.data, chartData.layout);
+            }
+            
+            // Mock risk distribution chart
+            const riskData = {
+                data: [{
+                    values: [60, 25, 10, 5],
+                    labels: ['Low', 'Medium', 'High', 'Critical'],
+                    type: 'pie',
+                    marker: {
+                        colors: ['#28a745', '#ffc107', '#fd7e14', '#dc3545']
+                    }
+                }],
+                layout: {
+                    title: 'Risk Level Distribution',
+                    height: 400
+                }
+            };
+            
+            const riskContainer = document.getElementById('risk-distribution-chart');
+            riskContainer.classList.remove('loading-spinner');
+            Plotly.newPlot('risk-distribution-chart', riskData.data, riskData.layout);
+        }
+        
+        // Utility functions
+        function refreshData() {
+            if (socket) {
+                socket.emit('request_metrics');
+            }
+            loadInitialData();
+        }
+        
+        function exportReport() {
+            // Mock export functionality
+            alert('Export functionality coming soon!');
+        }
+        
+        // Load section data on section change
+        function loadRiskAnalytics() {
+            // Mock implementation
+            console.log('Loading risk analytics...');
+        }
+        
+        function loadActiveAlerts() {
+            // Mock implementation
+            console.log('Loading active alerts...');
+        }
+    </script>
+</body>
+</html>

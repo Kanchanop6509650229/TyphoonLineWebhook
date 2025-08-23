@@ -15,13 +15,13 @@ class DatabaseManager:
     จัดการการเชื่อมต่อฐานข้อมูลและการดำเนินการที่เกี่ยวข้อง
     """
     
-    def __init__(self, config: Dict[str, Any], pool_size: int = 10, pool_name: str = "chat_pool"):
+    def __init__(self, config: Dict[str, Any], pool_size: int = 32, pool_name: str = "chat_pool"):
         """
         สร้างอินสแตนซ์ของ DatabaseManager
         
         Args:
             config: การตั้งค่าการเชื่อมต่อฐานข้อมูล
-            pool_size: ขนาดของ connection pool
+            pool_size: ขนาดของ connection pool (increased default from 10 to 50)
             pool_name: ชื่อของ connection pool
         """
         self.config = {
@@ -32,53 +32,110 @@ class DatabaseManager:
             'database': config.get('MYSQL_DB', 'chatbot'),
             'charset': 'utf8mb4',
             'use_unicode': True,
-            'connect_timeout': 10
+            'connect_timeout': 30,  # Increased from 10
+            'autocommit': True,
+            'raise_on_warnings': True,
+            'sql_mode': 'TRADITIONAL',
+            'get_warnings': True
         }
         self.pool_size = pool_size
         self.pool_name = pool_name
         self.pool = None
+        self.max_retries = 3
+        self.retry_delay = 1
+        self.health_check_interval = 300  # 5 minutes
+        self.last_health_check = 0
         self.init_pool()
         
     def init_pool(self) -> None:
         """
-        เริ่มต้น connection pool
+        เริ่มต้น connection pool with enhanced configuration
         """
         try:
             self.pool = pooling.MySQLConnectionPool(
                 pool_name=self.pool_name,
                 pool_size=self.pool_size,
+                pool_reset_session=True,  # Reset session state on reuse
                 **self.config
             )
             logging.info(f"MySQL connection pool initialized with size {self.pool_size}")
+            
+            # Test the pool with a simple query
+            self._test_pool_connection()
+            
         except Exception as e:
             logging.error(f"Error initializing MySQL connection pool: {str(e)}")
+            raise
+    
+    def _test_pool_connection(self) -> None:
+        """
+        Test the connection pool with a simple query
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+                cursor.close()
+            logging.info("Connection pool test successful")
+        except Exception as e:
+            logging.error(f"Connection pool test failed: {str(e)}")
             raise
     
     @contextmanager
     def get_connection(self):
         """
-        Context manager สำหรับการจัดการการเชื่อมต่อฐานข้อมูล
+        Context manager สำหรับการจัดการการเชื่อมต่อฐานข้อมูล with retry logic
         
         Yields:
             Connection: การเชื่อมต่อฐานข้อมูล
         """
         conn = None
-        try:
-            conn = self.pool.get_connection()
-            yield conn
-        except mysql.connector.Error as e:
-            logging.error(f"Database connection error: {str(e)}")
-            # ลองเชื่อมต่อใหม่ถ้าการเชื่อมต่อหลุด
-            if e.errno == 2006:  # MySQL server has gone away
-                logging.info("Attempting to reconnect to database...")
-                self.init_pool()
+        retries = 0
+        
+        while retries < self.max_retries:
+            try:
+                # Perform health check if needed
+                self._perform_health_check_if_needed()
+                
                 conn = self.pool.get_connection()
+                
+                # Verify connection is alive
+                if not conn.is_connected():
+                    raise mysql.connector.Error("Connection is not active")
+                    
                 yield conn
-            else:
+                break  # Success, exit retry loop
+                
+            except mysql.connector.Error as e:
+                retries += 1
+                logging.error(f"Database connection error (attempt {retries}/{self.max_retries}): {str(e)}")
+                
+                # Handle specific error types
+                if e.errno in [2006, 2013, 2055]:  # Server gone away, lost connection, packet too large
+                    logging.info("Connection lost, attempting to reinitialize pool...")
+                    try:
+                        self.init_pool()
+                    except Exception as init_error:
+                        logging.error(f"Failed to reinitialize pool: {str(init_error)}")
+                
+                if retries < self.max_retries:
+                    sleep_time = self.retry_delay * (2 ** (retries - 1))  # Exponential backoff
+                    logging.info(f"Retrying connection in {sleep_time} seconds...")
+                    time.sleep(sleep_time)
+                else:
+                    logging.error(f"Failed to get database connection after {self.max_retries} retries")
+                    raise
+                    
+            except Exception as e:
+                logging.error(f"Unexpected database error: {str(e)}")
                 raise
-        finally:
-            if conn and conn.is_connected():
-                conn.close()
+            finally:
+                if conn and conn.is_connected():
+                    try:
+                        conn.close()
+                    except Exception as close_error:
+                        logging.warning(f"Error closing connection: {str(close_error)}")
     
     @contextmanager
     def get_cursor(self, dictionary=False):
@@ -166,16 +223,60 @@ class DatabaseManager:
     
     def check_connection(self) -> bool:
         """
-        ตรวจสอบการเชื่อมต่อฐานข้อมูล
+        ตรวจสอบการเชื่อมต่อฐานข้อมูล with comprehensive health check
         
         Returns:
             bool: True ถ้าการเชื่อมต่อปกติ
         """
         try:
             with self.get_connection() as conn:
-                return conn.is_connected()
-        except Exception:
+                if not conn.is_connected():
+                    return False
+                
+                # Test with a simple query
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                result = cursor.fetchone()
+                cursor.close()
+                
+                return result is not None
+        except Exception as e:
+            logging.warning(f"Connection health check failed: {str(e)}")
             return False
+    
+    def _perform_health_check_if_needed(self) -> None:
+        """
+        Perform health check if enough time has passed since last check
+        """
+        current_time = time.time()
+        if current_time - self.last_health_check > self.health_check_interval:
+            self.last_health_check = current_time
+            if not self.check_connection():
+                logging.warning("Health check failed, reinitializing connection pool")
+                self.init_pool()
+    
+    def get_pool_status(self) -> Dict[str, Any]:
+        """
+        Get connection pool status information
+        
+        Returns:
+            Dict: Pool status information
+        """
+        try:
+            if not self.pool:
+                return {'status': 'not_initialized'}
+            
+            # Note: mysql-connector-python doesn't expose pool statistics directly
+            # This is a basic implementation
+            return {
+                'status': 'active',
+                'pool_name': self.pool_name,
+                'pool_size': self.pool_size,
+                'last_health_check': self.last_health_check,
+                'health_check_interval': self.health_check_interval
+            }
+        except Exception as e:
+            return {'status': 'error', 'error': str(e)}
     
     def get_table_schema(self, table_name: str) -> List[Dict[str, Any]]:
         """
@@ -213,3 +314,52 @@ class DatabaseManager:
         """
         result = self.execute_query(query, (table_name,))
         return result[0][0] > 0
+    
+    def get_connection_metrics(self) -> Dict[str, Any]:
+        """
+        Get database connection and performance metrics
+        
+        Returns:
+            Dict: Connection and performance metrics
+        """
+        metrics = {
+            'connection_pool': self.get_pool_status(),
+            'database_status': {},
+            'performance_metrics': {}
+        }
+        
+        try:
+            # Get database status variables
+            status_query = """
+                SHOW STATUS WHERE Variable_name IN (
+                    'Connections', 'Max_used_connections', 'Threads_connected',
+                    'Threads_running', 'Queries', 'Slow_queries', 'Uptime'
+                )
+            """
+            result = self.execute_query(status_query, dictionary=True)
+            
+            for row in result:
+                if isinstance(row, dict):
+                    metrics['database_status'][row['Variable_name']] = row['Value']
+                else:
+                    # Handle tuple format
+                    metrics['database_status'][row[0]] = row[1]
+            
+            # Get database size information
+            size_query = """
+                SELECT 
+                    table_schema as 'Database',
+                    ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) as 'Size_MB'
+                FROM information_schema.tables 
+                WHERE table_schema = DATABASE()
+                GROUP BY table_schema
+            """
+            size_result = self.execute_query(size_query)
+            if size_result:
+                metrics['performance_metrics']['database_size_mb'] = size_result[0][1]
+            
+        except Exception as e:
+            logging.warning(f"Could not collect database metrics: {str(e)}")
+            metrics['error'] = str(e)
+        
+        return metrics

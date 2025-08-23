@@ -126,12 +126,23 @@ try:
         'MYSQL_DB': config.MYSQL_DB
     }
 
-    # สร้าง DatabaseManager ด้วยการตั้งค่าที่เหมาะสม
-    db_manager = DatabaseManager(db_config, pool_size=20)
+    # สร้าง DatabaseManager ด้วยการตั้งค่าที่เหมาะสม (maximum allowed pool size)
+    db_manager = DatabaseManager(db_config, pool_size=32)
 
-    # เริ่มต้นฐานข้อมูล (สร้างตารางถ้ายังไม่มี)
+    # เสร็จสิ้นการตรวจสอบและเริ่มต้นฐานข้อมูล
     initialize_database(db_config)
-    logging.info("เสร็จสิ้นการตรวจสอบและเริ่มต้นฐานข้อมูล")
+    logging.info("เสร็จสิ้นการเริ่มต้นและตรวจสอบฐานข้อมูล")
+    
+    # Apply database optimizations
+    try:
+        from .database_optimization import optimize_database
+        optimization_result = optimize_database(db_config)
+        if optimization_result:
+            logging.info("การปรับปรุงประสิทธิภาพฐานข้อมูลสำเร็จ")
+        else:
+            logging.warning("การปรับปรุงประสิทธิภาพฐานข้อมูลเสร็จสิ้นแต่มีปัญหาบางส่วน")
+    except Exception as e:
+        logging.error(f"ไม่สามารถรันการปรับปรุงฐานข้อมูลได้: {str(e)}")
 
     # เริ่มต้น ChatHistoryDB ด้วย DatabaseManager
     db = ChatHistoryDB(db_manager)
