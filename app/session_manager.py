@@ -199,7 +199,8 @@ def hybrid_context_management(user_id: str, token_threshold: int) -> List[Dict[s
                 summary = summarize_conversation_history(formatted_normal)
             new_history = []
             if summary:
-                new_history.append({"role": "assistant", "content": f"สรุปการสนทนาก่อนหน้า: {summary}"})
+                # ใช้ role พิเศษสำหรับการสรุปที่ไม่แสดงให้ผู้ใช้เห็น
+                new_history.append({"role": "system_summary", "content": f"สรุปการสนทนาก่อนหน้า: {summary}"})
             new_history.extend(important_messages)
             new_history.extend(recent_messages)
             save_chat_session(user_id, new_history)

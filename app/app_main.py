@@ -348,7 +348,8 @@ def process_and_optimize_history(user_id, max_tokens=85000):
         # เพิ่มสรุปทั้งหมด
         if summaries:
             combined_summary = "\n\n".join(summaries)
-            optimized_history.append({"role": "assistant", "content": f"สรุปการสนทนาก่อนหน้า: {combined_summary}"})
+            # ใช้ role พิเศษสำหรับการสรุปที่ไม่แสดงให้ผู้ใช้เห็น
+            optimized_history.append({"role": "system_summary", "content": f"สรุปการสนทนาก่อนหน้า: {combined_summary}"})
 
         # เพิ่มข้อความสำคัญ
         optimized_history.extend(important_messages)
@@ -367,6 +368,51 @@ def process_and_optimize_history(user_id, max_tokens=85000):
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการปรับปรุงประวัติ: {str(e)}")
         return get_chat_session(user_id)  # ส่งคืนประวัติปกติในกรณีที่มีข้อผิดพลาด
+
+@safe_api_call
+def filter_messages_for_api(messages):
+    """
+    กรองข้อความที่มี role เป็น 'system_summary' ออกจากการส่งไปยัง API
+    แต่ยังคงไว้ในระบบเพื่อให้ AI เข้าใจบริบท
+    
+    Args:
+        messages (list): รายการข้อความ
+        
+    Returns:
+        list: ข้อความที่กรองแล้ว
+    """
+    filtered_messages = []
+    summary_content = ""
+    
+    for message in messages:
+        if message.get('role') == 'system_summary':
+            # เก็บเนื้อหาสรุปแต่ไม่ส่งไปยัง API
+            summary_content += message.get('content', '') + "\n\n"
+        else:
+            filtered_messages.append(message)
+    
+    # ถ้ามีการสรุป ให้รวมเข้ากับ system message เพื่อให้ AI เข้าใจบริบท
+    if summary_content.strip():
+        # ค้นหา system message ที่มีอยู่แล้ว
+        system_msg_found = False
+        for i, msg in enumerate(filtered_messages):
+            if msg.get('role') == 'system':
+                # เพิ่มการสรุปเข้าใน system message ที่มีอยู่
+                filtered_messages[i] = {
+                    'role': 'system',
+                    'content': msg.get('content', '') + "\n\nข้อมูลสำคัญเพิ่มเติม (สำหรับ AI เท่านั้น):\n" + summary_content.strip()
+                }
+                system_msg_found = True
+                break
+        
+        # ถ้าไม่มี system message ให้เพิ่มใหม่
+        if not system_msg_found:
+            filtered_messages.insert(0, {
+                'role': 'system',
+                'content': "ข้อมูลสำคัญเพิ่มเติม (สำหรับ AI เท่านั้น):\n" + summary_content.strip()
+            })
+    
+    return filtered_messages
 
 @safe_api_call
 def summarize_conversation_history(history):
@@ -1352,11 +1398,14 @@ def generate_ai_response_with_timeout(messages: List[Dict[str, str]], timeout: i
     # ใช้ threading หรือ asyncio สำหรับ timeout
     import concurrent.futures
     
+    # กรองข้อความก่อนส่งไปยัง API
+    filtered_messages = filter_messages_for_api(messages)
+    
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future = executor.submit(
             deepseek_client.chat.completions.create,
             model=config.DEEPSEEK_MODEL,
-            messages=[SYSTEM_MESSAGES] + messages,
+            messages=[SYSTEM_MESSAGES] + filtered_messages,
             **GENERATION_CONFIG
         )
         
@@ -1646,7 +1695,8 @@ def prepare_conversation_context(messages, optimized_history):
     if len(optimized_history) > 5:
         summary = summarize_conversation_history(optimized_history[5:])
         if summary:
-            messages.append({"role": "assistant", "content": f"สรุปการสนทนาก่อนหน้า: {summary}"})
+            # ใช้ role พิเศษสำหรับการสรุปที่ไม่แสดงให้ผู้ใช้เห็น
+            messages.append({"role": "system_summary", "content": f"สรุปการสนทนาก่อนหน้า: {summary}"})
 
 def send_session_timeout_message(user_id):
     """ส่งข้อความเซสชันหมดอายุ"""
@@ -1864,9 +1914,12 @@ def handle_response_timing(start_time, animation_success):
 def generate_ai_response(messages):
     """สร้างการตอบกลับด้วย AI โดยมีการจัดการข้อผิดพลาด"""
     try:
+        # กรองข้อความก่อนส่งไปยัง API
+        filtered_messages = filter_messages_for_api(messages)
+        
         response = deepseek_client.chat.completions.create(
             model=config.DEEPSEEK_MODEL,
-            messages=[SYSTEM_MESSAGES] + messages,
+            messages=[SYSTEM_MESSAGES] + filtered_messages,
             **GENERATION_CONFIG
         )
 
