@@ -38,7 +38,7 @@ class DatabaseOptimizer:
                 'index_name': 'idx_conversations_user_timestamp',
                 'columns': '(user_id, timestamp)',
                 'query': '''
-                    CREATE INDEX IF NOT EXISTS idx_conversations_user_timestamp 
+                    CREATE INDEX idx_conversations_user_timestamp 
                     ON conversations(user_id, timestamp)
                 '''
             },
@@ -47,7 +47,7 @@ class DatabaseOptimizer:
                 'index_name': 'idx_conversations_risk_level',
                 'columns': '(important_flag, timestamp)',
                 'query': '''
-                    CREATE INDEX IF NOT EXISTS idx_conversations_risk_level 
+                    CREATE INDEX idx_conversations_risk_level 
                     ON conversations(important_flag, timestamp)
                 '''
             },
@@ -56,7 +56,7 @@ class DatabaseOptimizer:
                 'index_name': 'idx_conversations_token_count',
                 'columns': '(token_count)',
                 'query': '''
-                    CREATE INDEX IF NOT EXISTS idx_conversations_token_count 
+                    CREATE INDEX idx_conversations_token_count 
                     ON conversations(token_count)
                 '''
             },
@@ -66,7 +66,7 @@ class DatabaseOptimizer:
                 'index_name': 'idx_registration_created_at',
                 'columns': '(created_at)',
                 'query': '''
-                    CREATE INDEX IF NOT EXISTS idx_registration_created_at 
+                    CREATE INDEX idx_registration_created_at 
                     ON registration_codes(created_at)
                 '''
             },
@@ -75,7 +75,7 @@ class DatabaseOptimizer:
                 'index_name': 'idx_registration_status_created',
                 'columns': '(status, created_at)',
                 'query': '''
-                    CREATE INDEX IF NOT EXISTS idx_registration_status_created 
+                    CREATE INDEX idx_registration_status_created 
                     ON registration_codes(status, created_at)
                 '''
             },
@@ -85,7 +85,7 @@ class DatabaseOptimizer:
                 'index_name': 'idx_follow_ups_created_status',
                 'columns': '(created_at, status)',
                 'query': '''
-                    CREATE INDEX IF NOT EXISTS idx_follow_ups_created_status 
+                    CREATE INDEX idx_follow_ups_created_status 
                     ON follow_ups(created_at, status)
                 '''
             },
@@ -95,7 +95,7 @@ class DatabaseOptimizer:
                 'index_name': 'idx_user_metrics_timestamp',
                 'columns': '(timestamp)',
                 'query': '''
-                    CREATE INDEX IF NOT EXISTS idx_user_metrics_timestamp 
+                    CREATE INDEX idx_user_metrics_timestamp 
                     ON user_metrics(timestamp)
                 '''
             },
@@ -331,15 +331,21 @@ class DatabaseOptimizer:
                 if not self.db.table_exists(table):
                     continue
                 
-                # Analyze table
+                # Analyze table with proper result handling
                 logging.info(f"Analyzing table {table}...")
-                analyze_query = f"ANALYZE TABLE {table}"
-                self.db.execute_and_commit(analyze_query)
+                with self.db.get_cursor() as cursor:
+                    cursor.execute(f"ANALYZE TABLE {table}")
+                    # Consume all results to avoid "Unread result found" error
+                    results = cursor.fetchall()
+                    logging.debug(f"ANALYZE TABLE {table} results: {results}")
                 
-                # Optimize table (rebuilds indexes and reclaims space)
+                # Optimize table with proper result handling
                 logging.info(f"Optimizing table {table}...")
-                optimize_query = f"OPTIMIZE TABLE {table}"
-                self.db.execute_and_commit(optimize_query)
+                with self.db.get_cursor() as cursor:
+                    cursor.execute(f"OPTIMIZE TABLE {table}")
+                    # Consume all results to avoid "Unread result found" error
+                    results = cursor.fetchall()
+                    logging.debug(f"OPTIMIZE TABLE {table} results: {results}")
                 
                 success_count += 1
                 logging.info(f"Table {table} maintenance completed")

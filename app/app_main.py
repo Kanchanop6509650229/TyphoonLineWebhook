@@ -134,8 +134,29 @@ try:
         'MYSQL_DB': config.MYSQL_DB
     }
 
-    # สร้าง DatabaseManager ด้วยการตั้งค่าที่เหมาะสม (maximum allowed pool size)
-    db_manager = DatabaseManager(db_config, pool_size=32)
+    # สร้าง DatabaseManager ด้วยการตั้งค่าที่เหมาะสม with retry logic for container startup
+    max_db_retries = 5
+    db_retry_count = 0
+    db_manager = None
+    
+    while db_retry_count < max_db_retries:
+        try:
+            db_manager = DatabaseManager(db_config, pool_size=32)
+            break  # Success, exit retry loop
+        except Exception as e:
+            db_retry_count += 1
+            if db_retry_count >= max_db_retries:
+                logging.critical(f"เกิดข้อผิดพลาดในการเริ่มต้นแอพพลิเคชัน: {str(e)}")
+                logging.critical(f"เกิดข้อผิดพลาดร้ายแรงในการเริ่มต้นแอพพลิเคชัน: {str(e)}")
+                raise
+            else:
+                wait_time = 5 * db_retry_count
+                logging.warning(f"Database initialization failed (attempt {db_retry_count}/{max_db_retries}), retrying in {wait_time} seconds: {str(e)}")
+                time.sleep(wait_time)
+    
+    # Ensure db_manager is not None before proceeding
+    if db_manager is None:
+        raise RuntimeError("Failed to initialize database manager after all retries")
 
     # เสร็จสิ้นการตรวจสอบและเริ่มต้นฐานข้อมูล
     initialize_database(db_config)
@@ -165,6 +186,65 @@ except Exception as e:
 
 # เริ่มต้น rate limiter
 limiter = init_limiter(app)
+
+# Health check endpoint
+@app.route('/health', methods=['GET'])
+def health_check():
+    """
+    Health check endpoint for monitoring
+    """
+    try:
+        health_status = {
+            'status': 'healthy',
+            'timestamp': datetime.now().isoformat(),
+            'services': {
+                'database': 'unknown',
+                'redis': 'unknown',
+                'deepseek_api': 'unknown'
+            }
+        }
+        
+        # Check database
+        try:
+            if db_manager and db_manager.check_connection():
+                health_status['services']['database'] = 'healthy'
+            else:
+                health_status['services']['database'] = 'unhealthy'
+                health_status['status'] = 'degraded'
+        except Exception as e:
+            health_status['services']['database'] = f'error: {str(e)[:50]}'
+            health_status['status'] = 'degraded'
+        
+        # Check Redis
+        try:
+            redis_client.ping()
+            health_status['services']['redis'] = 'healthy'
+        except Exception as e:
+            health_status['services']['redis'] = f'error: {str(e)[:50]}'
+            health_status['status'] = 'degraded'
+        
+        # Check DeepSeek API (simple check)
+        try:
+            # This is a lightweight check - we don't actually call the API
+            if config.DEEPSEEK_API_KEY:
+                health_status['services']['deepseek_api'] = 'configured'
+            else:
+                health_status['services']['deepseek_api'] = 'not_configured'
+        except Exception as e:
+            health_status['services']['deepseek_api'] = f'error: {str(e)[:50]}'
+        
+        # Determine overall status code
+        if health_status['status'] == 'healthy':
+            return jsonify(health_status), 200
+        else:
+            return jsonify(health_status), 503
+            
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
 
 def chunk_conversation_history(history, chunk_size=10):
     """
@@ -1089,7 +1169,7 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
             # ถ้าโทเค็นเกิน ใช้การจัดการแบบพิเศษ
             logging.info(f"โทเค็นเกินขีดจำกัดสำหรับผู้ใช้ {user_id}, ใช้การจัดการแบบไฮบริด")
             try:
-                messages = hybrid_context_management(user_id)
+                messages = hybrid_context_management(user_id, TOKEN_THRESHOLD)
                 # เพิ่มบริบทกลับเข้าไปถ้ามี
                 if user_context:
                     add_context_to_messages(messages, user_context)
@@ -1626,7 +1706,7 @@ def handle_command_with_processing(user_id, command):
     elif command == '/optimize':
         # เพิ่มคำสั่งใหม่สำหรับการปรับประวัติการสนทนาโดยตรง
         token_count_before = get_session_token_count(user_id)
-        hybrid_context_management(user_id)
+        hybrid_context_management(user_id, TOKEN_THRESHOLD)
         token_count_after = get_session_token_count(user_id)
 
         response_text = (
@@ -1670,8 +1750,6 @@ def handle_command_with_processing(user_id, command):
             "📋 /context - ดูบริบทของคุณจากแบบประเมินที่กรอกไว้\n"
             "🔔 /followup - ตรวจสอบกำหนดการติดตามของคุณ\n"
             "🚨 /emergency - ดูข้อมูลติดต่อฉุกเฉินและสายด่วน\n"
-            "💬 /feedback - ส่งความคิดเห็นหรือรายงานปัญหา\n"
-            "🔄 /reset - ล้างประวัติการสนทนาและเริ่มต้นใหม่\n"
             "❓ /help - แสดงเมนูช่วยเหลือนี้\n\n"
             "💡 ตัวอย่างคำถามที่สามารถถามฉันได้:\n"
             "- \"ช่วยประเมินการใช้สารเสพติดของฉันหน่อย\"\n"

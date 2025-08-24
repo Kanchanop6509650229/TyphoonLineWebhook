@@ -49,8 +49,11 @@ class DatabaseManager:
         
     def init_pool(self) -> None:
         """
-        เริ่มต้น connection pool with enhanced configuration
+        เริ่มต้น connection pool with enhanced configuration and startup wait
         """
+        # Wait for database to be ready (for Docker container startup)
+        self._wait_for_database()
+        
         try:
             self.pool = pooling.MySQLConnectionPool(
                 pool_name=self.pool_name,
@@ -66,6 +69,44 @@ class DatabaseManager:
         except Exception as e:
             logging.error(f"Error initializing MySQL connection pool: {str(e)}")
             raise
+    
+    def _wait_for_database(self, max_wait_time: int = 60, retry_interval: int = 2) -> None:
+        """
+        Wait for database to be ready before initializing connection pool
+        
+        Args:
+            max_wait_time: Maximum time to wait in seconds
+            retry_interval: Time between retries in seconds
+        """
+        import socket
+        
+        start_time = time.time()
+        host = self.config['host']
+        port = self.config['port']
+        
+        logging.info(f"Waiting for database at {host}:{port} to become available...")
+        
+        while time.time() - start_time < max_wait_time:
+            try:
+                # Try to connect to the database port
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(retry_interval)
+                result = sock.connect_ex((host, port))
+                sock.close()
+                
+                if result == 0:
+                    logging.info(f"Database port {host}:{port} is accessible")
+                    # Additional wait to ensure MySQL is fully ready
+                    time.sleep(2)
+                    return
+                    
+            except Exception as e:
+                logging.debug(f"Database port check failed: {str(e)}")
+            
+            logging.info(f"Database not ready yet, waiting {retry_interval} seconds...")
+            time.sleep(retry_interval)
+        
+        logging.warning(f"Database at {host}:{port} did not become available within {max_wait_time} seconds")
     
     def _test_pool_connection(self) -> None:
         """
@@ -92,6 +133,7 @@ class DatabaseManager:
         """
         conn = None
         retries = 0
+        last_error = None
         
         while retries < self.max_retries:
             try:
@@ -108,12 +150,17 @@ class DatabaseManager:
                 break  # Success, exit retry loop
                 
             except mysql.connector.Error as e:
+                last_error = e
                 retries += 1
-                logging.error(f"Database connection error (attempt {retries}/{self.max_retries}): {str(e)}")
+                
+                # Only log every 3rd attempt to reduce log spam during startup
+                if retries % 3 == 1 or retries >= self.max_retries:
+                    logging.error(f"Database connection error (attempt {retries}/{self.max_retries}): {str(e)}")
                 
                 # Handle specific error types
                 if e.errno in [2006, 2013, 2055]:  # Server gone away, lost connection, packet too large
-                    logging.info("Connection lost, attempting to reinitialize pool...")
+                    if retries % 3 == 1:  # Only log pool reinit attempts occasionally
+                        logging.info("Connection lost, attempting to reinitialize pool...")
                     try:
                         self.init_pool()
                     except Exception as init_error:
@@ -121,11 +168,12 @@ class DatabaseManager:
                 
                 if retries < self.max_retries:
                     sleep_time = self.retry_delay * (2 ** (retries - 1))  # Exponential backoff
-                    logging.info(f"Retrying connection in {sleep_time} seconds...")
+                    if retries % 3 == 1:  # Only log retry messages occasionally
+                        logging.info(f"Retrying connection in {sleep_time} seconds...")
                     time.sleep(sleep_time)
                 else:
                     logging.error(f"Failed to get database connection after {self.max_retries} retries")
-                    raise
+                    raise last_error
                     
             except Exception as e:
                 logging.error(f"Unexpected database error: {str(e)}")

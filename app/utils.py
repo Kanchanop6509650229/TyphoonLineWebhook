@@ -25,20 +25,49 @@ def safe_db_operation(func: F) -> F:
     """
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            logging.error(f"เกิดข้อผิดพลาดของฐานข้อมูลใน {func.__name__}: {str(e)}")
-            logging.debug(traceback.format_exc())
-            
-            # คืนค่าเริ่มต้นที่เหมาะสมตามชื่อฟังก์ชัน
-            if func.__name__.startswith('get_'):
-                # สำหรับฟังก์ชันการดึงข้อมูล
-                if 'count' in func.__name__:
-                    return 0
-                return None
-            # สำหรับฟังก์ชันการบันทึกหรือการอัพเดท
-            return False
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                error_str = str(e).lower()
+                retry_count += 1
+                
+                # Handle specific database errors that can be retried
+                if any(error_pattern in error_str for error_pattern in [
+                    'connection', 'timeout', 'server has gone away', 
+                    'lost connection', 'can\'t connect', 'unread result'
+                ]):
+                    if retry_count < max_retries:
+                        wait_time = retry_count * 2  # Progressive backoff
+                        logging.warning(f"Database connection error in {func.__name__} (attempt {retry_count}/{max_retries}): {str(e)}")
+                        logging.info(f"Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)
+                        continue
+                
+                # For non-retryable errors or max retries reached
+                logging.error(f"เกิดข้อผิดพลาดของฐานข้อมูลใน {func.__name__}: {str(e)}")
+                logging.debug(traceback.format_exc())
+                
+                # คืนค่าเริ่มต้นที่เหมาะสมตามชื่อฟังก์ชัน
+                if func.__name__.startswith('get_'):
+                    # สำหรับฟังก์ชันการดึงข้อมูล
+                    if 'count' in func.__name__:
+                        return 0
+                    return None
+                # สำหรับฟังก์ชันการบันทึกหรือการอัพเดท
+                return False
+        
+        # If we get here, all retries failed
+        logging.error(f"Database operation {func.__name__} failed after {max_retries} retries")
+        if func.__name__.startswith('get_'):
+            if 'count' in func.__name__:
+                return 0
+            return None
+        return False
+        
     return cast(F, wrapper)
 
 def safe_api_call(func: F) -> F:
