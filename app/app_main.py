@@ -50,28 +50,25 @@ from .risk_assessment import (
 from .async_api import AsyncDeepseekClient
 from .database_init import initialize_database
 from .database_manager import DatabaseManager
+from .error_handling import (
+    ChatbotError,
+    ErrorCategory,
+    ErrorSeverity,
+    get_error_handler
+)
 import traceback
 from typing import Optional, List, Dict, Tuple
 from enum import Enum
 
+# Legacy error types for backward compatibility - will be migrated to new system
 class ErrorType(Enum):
-    """ประเภทข้อผิดพลาดที่อาจเกิดขึ้น"""
+    """Legacy error types - use ErrorCategory instead"""
     CONTEXT_LOAD_ERROR = "context_load_error"
     TOKEN_MANAGEMENT_ERROR = "token_management_error"
     AI_API_ERROR = "ai_api_error"
     MESSAGE_SEND_ERROR = "message_send_error"
     DATABASE_ERROR = "database_error"
     UNKNOWN_ERROR = "unknown_error"
-
-class ChatbotError(Exception):
-    """Custom exception สำหรับ chatbot"""
-    def __init__(self, error_type: ErrorType, message: str, original_error: Optional[Exception] = None):
-        self.error_type = error_type
-        self.message = message
-        self.original_error = original_error
-        super().__init__(self.message)
-
-SESSION_TIMEOUT = 604800
 
 # สร้างอินสแตนซ์แอป Flask
 app = Flask(__name__)
@@ -1134,7 +1131,7 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
                     logging.warning(f"AI API timeout (attempt {retry_count}/{max_retries})")
                     time.sleep(2 ** retry_count)  # Exponential backoff
                 else:
-                    raise ChatbotError(
+                    raise create_legacy_chatbot_error(
                         ErrorType.AI_API_ERROR,
                         "AI API timeout after all retries",
                         e
@@ -1156,7 +1153,7 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
                 logging.error(f"AI API error (attempt {retry_count + 1}): {str(e)}")
                 retry_count += 1
                 if retry_count >= max_retries:
-                    raise ChatbotError(
+                    raise create_legacy_chatbot_error(
                         ErrorType.AI_API_ERROR,
                         f"AI API error after {max_retries} attempts",
                         e
@@ -1185,7 +1182,7 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
         try:
             success = send_final_response(user_id, bot_response)
             if not success:
-                raise ChatbotError(
+                raise create_legacy_chatbot_error(
                     ErrorType.MESSAGE_SEND_ERROR,
                     "Failed to send response to user"
                 )
@@ -1389,22 +1386,43 @@ def send_system_notification(user_id: str, used_fallback: bool, had_error: bool)
     threading.Thread(target=send_delayed, daemon=True).start()
 
 
+# Helper function to create legacy-compatible ChatbotError
+def create_legacy_chatbot_error(error_type: ErrorType, message: str, original_error: Optional[Exception] = None):
+    """Create ChatbotError compatible with legacy system"""
+    # Create a simple object that mimics the old ChatbotError for backward compatibility
+    class LegacyChatbotError(Exception):
+        def __init__(self, error_type: ErrorType, message: str, original_error: Optional[Exception] = None):
+            self.error_type = error_type
+            self.message = message
+            self.original_error = original_error
+            super().__init__(self.message)
+    
+    return LegacyChatbotError(error_type, message, original_error)
+
+
 def handle_chatbot_error(error: ChatbotError, user_id: str, user_message: str):
-    """จัดการข้อผิดพลาดที่คาดการณ์ได้"""
-    logging.error(f"ChatbotError [{error.error_type.value}]: {error.message}")
+    """จัดการข้อผิดพลาดที่คาดการณ์ได้ - compatible with both legacy and new error systems"""
     
-    # ส่งข้อความที่เหมาะสมตามประเภทข้อผิดพลาด
-    error_messages = {
-        ErrorType.AI_API_ERROR: "ขออภัยค่ะ ระบบ AI กำลังมีปัญหา กรุณาลองใหม่อีกครั้ง",
-        ErrorType.TOKEN_MANAGEMENT_ERROR: "กำลังจัดระเบียบข้อมูล กรุณารอสักครู่",
-        ErrorType.DATABASE_ERROR: "มีปัญหาในการบันทึกข้อมูล แต่เรายังคุยกันต่อได้ค่ะ",
-        ErrorType.MESSAGE_SEND_ERROR: "ไม่สามารถส่งข้อความได้ กรุณาตรวจสอบการเชื่อมต่อ"
-    }
-    
-    message = error_messages.get(
-        error.error_type, 
-        "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่"
-    )
+    # Handle both old and new ChatbotError formats
+    if hasattr(error, 'error_type'):  # Legacy format
+        logging.error(f"ChatbotError [Legacy-{error.error_type.value}]: {error.message}")
+        
+        # ส่งข้อความที่เหมาะสมตามประเภทข้อผิดพลาด
+        error_messages = {
+            ErrorType.AI_API_ERROR: "ขออภัยค่ะ ระบบ AI กำลังมีปัญหา กรุณาลองใหม่อีกครั้ง",
+            ErrorType.TOKEN_MANAGEMENT_ERROR: "กำลังจัดระเบียบข้อมูล กรุณารอสักครู่",
+            ErrorType.DATABASE_ERROR: "มีปัญหาในการบันทึกข้อมูล แต่เรายังคุยกันต่อได้ค่ะ",
+            ErrorType.MESSAGE_SEND_ERROR: "ไม่สามารถส่งข้อความได้ กรุณาตรวจสอบการเชื่อมต่อ"
+        }
+        
+        message = error_messages.get(
+            error.error_type, 
+            "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่"
+        )
+    else:  # New enhanced format
+        logging.error(f"ChatbotError [{error.category.value}-{error.severity.value}]: {error.message}")
+        # Use the built-in user_message from the new error system
+        message = error.user_message or "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่"
     
     try:
         send_final_response(user_id, message)
