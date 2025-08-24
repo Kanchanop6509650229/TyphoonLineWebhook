@@ -215,45 +215,60 @@ def generate_contextual_followup_message(user_id: str, db, deepseek_client, conf
     from .utils import safe_api_call, clean_ai_response
     
     try:
-        # ดึงประวัติการสนทนาล่าสุด 10 ครั้ง
-        recent_history = db.get_user_history(user_id, limit=10)
+        # ดึงประวัติการสนทนาล่าสุด 20 ครั้ง โดยใช้ max_tokens แทน limit
+        # ใช้ max_tokens สูงเพื่อให้ได้ประมาณ 20 ข้อความล่าสุด
+        recent_history = db.get_user_history(user_id, max_tokens=20000)
         
         # ถ้าไม่มีประวัติการสนทนา ใช้ข้อความติดตามทั่วไป
         if not recent_history:
             return get_default_followup_message()
         
-        # สร้างบริบทการสนทนาสำหรับ DeepSeek
-        conversation_context = ""
-        for _, user_msg, bot_resp in recent_history:
-            conversation_context += f"ผู้ใช้: {user_msg}\nใจดี: {bot_resp}\n\n"
+        # จำกัดให้แสดงเฉพาะ 20 ข้อความล่าสุด
+        # เนื่องจาก get_user_history เรียงจากใหม่ไปเก่า เราต้องจัดเรียงใหม่
+        if len(recent_history) > 20:
+            recent_history = recent_history[:20]
         
-        # สร้าง prompt สำหรับ DeepSeek
+        # เรียงจากเก่าไปใหม่เพื่อให้ AI เข้าใจบริบทที่ถูกต้อง
+        recent_history = list(reversed(recent_history))
+        
+        # สร้างบริบทการสนทนาสำหรับ DeepSeek แบบมีโครงสร้าง
+        conversation_context = ""
+        total_messages = len(recent_history)
+        
+        for i, (_, user_msg, bot_resp) in enumerate(recent_history):
+            # เพิ่มหมายเลขลำดับเพื่อให้ AI เข้าใจความต่อเนื่อง
+            msg_number = i + 1
+            conversation_context += f"[{msg_number}/{total_messages}] ผู้ใช้: {user_msg}\n[{msg_number}/{total_messages}] ใจดี: {bot_resp}\n\n"
+        
+        # สร้าง prompt สำหรับ DeepSeek พร้อมบริบทที่ดีขึ้น
         followup_prompt = f"""
-ต่อไปนี้คือประวัติการสนทนาล่าสุด 10 ครั้งระหว่างผู้ใช้และแชทบอท "ใจดี" ที่ช่วยเหลือคนเลิกสารเสพติด:
+ต่อไปนี้คือประวัติการสนทนาล่าสุดระหว่างผู้ใช้และแชทบอท "ใจดี" ที่ช่วยเหลือคนเลิกสารเสพติด (รวม {total_messages} คู่ข้อความ):
 
 {conversation_context}
 
-ในฐานะแชทบอท "ใจดี" โปรดสร้างข้อความติดตามผลที่:
-1. อ้างอิงถึงหัวข้อหรือประเด็นที่เราพูดคุยกันล่าสุด
-2. แสดงความห่วงใยและความต่อเนื่องในการดูแล
-3. เป็นมิตรและให้กำลังใจ
-4. ถามถึงความคืบหน้าหรือสถานการณ์ปัจจุบัน
-5. มีความยาวประมาณ 2-3 ประโยค
-6. ใช้ภาษาไทยที่เป็นธรรมชาติและอบอุ่น
+จากประวัติการสนทนาข้างต้น โปรดสร้างข้อความติดตามผลที่:
+1. อ้างอิงถึงหัวข้อ ปัญหา หรือความคืบหน้าที่เราพูดคุยกันล่าสุด
+2. แสดงความห่วงใยและเป็นการติดตามอย่างต่อเนื่อง
+3. ใช้ข้อมูลจากการสนทนาเพื่อสร้างความเชื่อมโยงที่เป็นธรรมชาติ
+4. ถามถึงสถานการณ์ปัจจุบันหรือความรู้สึกในช่วงที่ผ่านมา
+5. มีความยาวประมาณ 2-4 ประโยค
+6. ใช้ภาษาไทยที่อบอุ่นและเข้าใจง่าย
 7. เริ่มต้นด้วยคำทักทายที่เหมาะสม
+
+โปรดสร้างข้อความติดตามที่แสดงให้เห็นว่าคุณจำและเข้าใจบริบทของการสนทนาก่อนหน้า:
 
 ข้อความติดตาม:"""
 
-        # เรียกใช้ DeepSeek API
+        # เรียกใช้ DeepSeek API ด้วยการตั้งค่าที่เหมาะสม
         response = deepseek_client.chat.completions.create(
             model=config.DEEPSEEK_MODEL,
             messages=[
-                {"role": "system", "content": "คุณคือแชทบอท 'ใจดี' ที่ช่วยเหลือคนเลิกสารเสพติดด้วยความเข้าใจและเป็นมิตร"},
+                {"role": "system", "content": "คุณคือแชทบอท 'ใจดี' ที่ช่วยเหลือคนเลิกสารเสพติดด้วยความเข้าใจและเป็นมิตร คุณสามารถจำและอ้างอิงถึงการสนทนาก่อนหน้าได้"},
                 {"role": "user", "content": followup_prompt}
             ],
-            temperature=0.7,  # เพิ่มความหลากหลายในการตอบ
-            max_tokens=200,   # จำกัดความยาว
-            top_p=0.9
+            temperature=0.6,  # ลดลงเล็กน้อยเพื่อความสอดคล้อง
+            max_tokens=250,   # เพิ่มขึ้นเล็กน้อยให้มีพื้นที่พอสำหรับข้อความที่ยาวขึ้น
+            top_p=0.85        # ปรับค่าให้เหมาะสม
         )
         
         # ตรวจสอบและทำความสะอาด response
@@ -264,10 +279,11 @@ def generate_contextual_followup_message(user_id: str, db, deepseek_client, conf
             followup_message = clean_ai_response(followup_message)
             
             # ตรวจสอบความยาวและเนื้อหา
-            if len(followup_message) > 20 and len(followup_message) < 500:
+            if len(followup_message) > 30 and len(followup_message) < 600:
+                logging.info(f"Successfully generated contextual follow-up message for user {user_id}: {len(followup_message)} characters")
                 return followup_message
             else:
-                logging.warning(f"AI generated follow-up message is too short or too long: {len(followup_message)} characters")
+                logging.warning(f"AI generated follow-up message length is outside acceptable range: {len(followup_message)} characters")
         
         # ถ้า AI response ไม่เหมาะสม ใช้ข้อความทั่วไป
         return get_fallback_followup_message()
