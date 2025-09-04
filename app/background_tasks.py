@@ -181,18 +181,18 @@ def generate_ai_response(self, user_id: str, user_message: str, conversation_his
         from .error_handling import get_error_handler, CircuitState
         import asyncio
         
-        # Get circuit breaker for DeepSeek API
+        # Get circuit breaker for xAI Grok API
         error_handler = get_error_handler()
-        circuit_breaker = error_handler.get_circuit_breaker('deepseek_api')
+        circuit_breaker = error_handler.get_circuit_breaker('xai_api')
         
         if circuit_breaker and circuit_breaker.state == CircuitState.OPEN:
-            raise Exception("DeepSeek API circuit breaker is open")
+            raise Exception("xAI API circuit breaker is open")
         
         # Create async client and generate response
         async def generate_response():
             client = AsyncDeepseekClient(
-                api_key=system_config.get('deepseek_api_key'),
-                model=system_config.get('deepseek_model', 'deepseek-chat')
+                api_key=system_config.get('xai_api_key'),
+                model=system_config.get('xai_model', 'grok-4')
             )
             
             await client.setup()
@@ -232,7 +232,7 @@ def generate_ai_response(self, user_id: str, user_message: str, conversation_his
             'success': True,
             'response': ai_response,
             'execution_time': execution_time,
-            'model_used': system_config.get('deepseek_model', 'deepseek-chat'),
+            'model_used': system_config.get('xai_model', 'grok-4'),
             'token_count': len(ai_response.split()) * 1.3  # Rough estimate
         }
         
@@ -282,8 +282,8 @@ def process_conversation_summary(self, user_id: str, conversation_history: List[
         
         async def generate_summary():
             client = AsyncDeepseekClient(
-                api_key=os.getenv('DEEPSEEK_API_KEY'),
-                model=os.getenv('DEEPSEEK_MODEL', 'deepseek-chat')
+                api_key=os.getenv('XAI_API_KEY'),
+                model=os.getenv('XAI_MODEL', 'grok-4')
             )
             
             await client.setup()

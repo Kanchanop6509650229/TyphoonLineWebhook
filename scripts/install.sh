@@ -92,8 +92,8 @@ if [ ! -f "$ENV_FILE" ]; then
 LINE_CHANNEL_ACCESS_TOKEN=your_token_here
 LINE_CHANNEL_SECRET=your_secret_here
 
-# DeepSeek API Configuration
-DEEPSEEK_API_KEY=your_api_key_here
+# xAI Grok API Configuration
+XAI_API_KEY=your_api_key_here
 
 # Redis Configuration
 REDIS_HOST=redis

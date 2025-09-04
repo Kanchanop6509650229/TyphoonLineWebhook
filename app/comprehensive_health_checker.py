@@ -293,72 +293,46 @@ class CacheHealthChecker:
 class ExternalServiceHealthChecker:
     """Health checker for external services"""
     
-    async def check_deepseek_api(self) -> HealthCheckResult:
-        """Check DeepSeek API health"""
+    async def check_xai_api(self) -> HealthCheckResult:
+        """Check xAI Grok API health via centralized client"""
         start_time = time.time()
         
         try:
-            api_key = os.getenv('DEEPSEEK_API_KEY')
+            api_key = os.getenv('XAI_API_KEY')
             if not api_key:
                 return HealthCheckResult(
-                    component="deepseek_api",
+                    component="xai_api",
                     status=ComponentStatus.WARNING,
-                    message="DeepSeek API key not configured",
+                    message="xAI API key not configured",
                     response_time=0,
                     timestamp=datetime.now(),
                     details={},
                     metrics={}
                 )
-            
-            # Simple health check request
-            headers = {
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json'
-            }
-            
-            # Use a minimal request to check API availability
-            data = {
-                'model': 'deepseek-chat',
-                'messages': [{'role': 'user', 'content': 'ping'}],
-                'max_tokens': 5
-            }
-            
-            response = requests.post(
-                'https://api.deepseek.com/chat/completions',
-                headers=headers,
-                json=data,
-                timeout=10
+            # Use centralized client to perform a minimal ping
+            from .llm import grok_client
+            _ = await grok_client.astream_chat(
+                messages=[{"role": "user", "content": "ping"}],
+                model=os.getenv('XAI_MODEL', 'grok-4'),
+                max_tokens=5,
             )
-            
             response_time = time.time() - start_time
-            
-            if response.status_code == 200:
-                return HealthCheckResult(
-                    component="deepseek_api",
-                    status=ComponentStatus.HEALTHY,
-                    message="DeepSeek API is healthy",
-                    response_time=response_time,
-                    timestamp=datetime.now(),
-                    details={"status_code": response.status_code},
-                    metrics={"response_time": response_time}
-                )
-            else:
-                return HealthCheckResult(
-                    component="deepseek_api",
-                    status=ComponentStatus.WARNING,
-                    message=f"DeepSeek API returned status {response.status_code}",
-                    response_time=response_time,
-                    timestamp=datetime.now(),
-                    details={"status_code": response.status_code},
-                    metrics={"response_time": response_time}
-                )
+            return HealthCheckResult(
+                component="xai_api",
+                status=ComponentStatus.HEALTHY,
+                message="xAI Grok API is healthy",
+                response_time=response_time,
+                timestamp=datetime.now(),
+                details={},
+                metrics={"response_time": response_time}
+            )
                 
         except Exception as e:
             response_time = time.time() - start_time
             return HealthCheckResult(
-                component="deepseek_api",
+                component="xai_api",
                 status=ComponentStatus.CRITICAL,
-                message=f"DeepSeek API health check failed: {str(e)}",
+                message=f"xAI Grok API health check failed: {str(e)}",
                 response_time=response_time,
                 timestamp=datetime.now(),
                 details={"error": str(e)},
@@ -527,7 +501,7 @@ class ComprehensiveHealthChecker:
             'database_performance': self.db_checker.check_database_performance,
             'redis_cache': self.cache_checker.check_redis_connection,
             'application_cache': self.cache_checker.check_application_cache,
-            'deepseek_api': self.service_checker.check_deepseek_api,
+            'xai_api': self.service_checker.check_xai_api,
             'line_api': self.service_checker.check_line_api,
             'system_resources': self.resource_checker.check_system_resources
         }

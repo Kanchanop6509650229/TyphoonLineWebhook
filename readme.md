@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guidance for individuals dealing with substance abuse issues. The chatbot leverages the DeepSeek model to deliver empathetic, non-judgmental responses in Thai language.
+TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guidance for individuals dealing with substance abuse issues. The chatbot now uses xAI's Grok-4 model to deliver empathetic, non-judgmental responses in Thai language.
 
 ## 🌟 Features
 
@@ -19,7 +19,7 @@ TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guida
 - MySQL 8.0+
 - Redis 6+
 - LINE Messaging API credentials
-- DeepSeek API key
+- xAI API key (XAI_API_KEY)
 
 ## 🚀 Installation
 
@@ -40,7 +40,7 @@ TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guida
    ```
    LINE_CHANNEL_ACCESS_TOKEN=your_line_token
    LINE_CHANNEL_SECRET=your_line_secret
-   DEEPSEEK_API_KEY=your_deepseek_api_key
+   XAI_API_KEY=your_xai_api_key
    ```
 
 4. Build and start the containers:
@@ -76,7 +76,7 @@ TyphoonLineWebhook is a LINE-based chatbot designed to provide support and guida
 |----------|-------------|---------|
 | `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API access token | - |
 | `LINE_CHANNEL_SECRET` | LINE channel secret | - |
-| `DEEPSEEK_API_KEY` | DeepSeek API key | - |
+| `XAI_API_KEY` | xAI API key | - |
 | `REDIS_HOST` | Redis host | localhost |
 | `REDIS_PORT` | Redis port | 6379 |
 | `MYSQL_HOST` | MySQL host | localhost |
@@ -105,7 +105,7 @@ The application follows a modular architecture with these key components:
                         │
                         ▼
 ┌────────────┐    ┌─────────────┐    ┌─────────────┐
-│ DeepSeek   │◄───┤ App Server  ├───►│    Redis    │
+│  xAI Grok  │◄───┤ App Server  ├───►│    Redis    │
 └────────────┘    └─────┬───────┘    └─────────────┘
                         │
                         ▼
@@ -117,7 +117,7 @@ The application follows a modular architecture with these key components:
 ### Key Components
 
 - **app_main.py**: Main application handling LINE webhook events
-- **async_api.py**: Asynchronous client for DeepSeek interactions
+- **async_api.py**: Backward-compatible async shim that forwards to xAI Grok
 - **chat_history_db.py**: Database operations for conversation history
 - **token_counter.py**: Token counting for API usage monitoring
 - **middleware/rate_limiter.py**: Rate limiting implementation
@@ -200,5 +200,73 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 🙏 Acknowledgements
 
 - [LINE Messaging API](https://developers.line.biz/en/docs/messaging-api/)
-- [DeepSeek](https://platform.deepseek.com/) for providing the chat model
+- [xAI](https://x.ai) for Grok-4
+
+## Migration Notes (DeepSeek → Grok-4)
+
+- Replaced `DEEPSEEK_API_KEY` with `XAI_API_KEY` and `DEEPSEEK_MODEL` with `XAI_MODEL` (default `grok-4`).
+- All AI calls route through `app/llm/grok_client.py` wrappers.
+- The legacy `app/async_api.py` remains as a thin shim and forwards to Grok.
+- Update `.env` with `XAI_API_KEY`, then run the app as usual.
+
+## Quick Examples (Grok-4)
+
+Python (sync):
+
+```python
+from openai import OpenAI
+import os
+
+client = OpenAI(api_key=os.environ["XAI_API_KEY"], base_url="https://api.x.ai/v1")
+
+resp = client.chat.completions.create(
+    model="grok-4",
+    messages=[{"role": "user", "content": "สวัสดี"}],
+    temperature=0.7,
+    max_tokens=256,
+)
+print(resp.choices[0].message.content)
+```
+
+Python (async):
+
+```python
+import asyncio
+from openai import AsyncOpenAI
+import os
+
+async def main():
+    client = AsyncOpenAI(api_key=os.environ["XAI_API_KEY"], base_url="https://api.x.ai/v1")
+    resp = await client.chat.completions.create(
+        model="grok-4",
+        messages=[{"role": "user", "content": "ทำอะไรได้บ้าง"}],
+        temperature=0.7,
+        max_tokens=256,
+    )
+    print(resp.choices[0].message.content)
+
+asyncio.run(main())
+```
+
+Python (streaming, sync):
+
+```python
+from openai import OpenAI
+import os
+
+client = OpenAI(api_key=os.environ["XAI_API_KEY"], base_url="https://api.x.ai/v1")
+
+for chunk in client.chat.completions.create(
+    model="grok-4",
+    messages=[{"role": "user", "content": "ช่วยแต่งกลอนสั้น ๆ หน่อย"}],
+    temperature=0.7,
+    max_tokens=256,
+    stream=True,
+):
+    if chunk.choices and getattr(chunk.choices[0], "delta", None):
+        text = chunk.choices[0].delta.content or ""
+        print(text, end="", flush=True)
+print()
+```
+
 - [Flask](https://flask.palletsprojects.com/) web framework

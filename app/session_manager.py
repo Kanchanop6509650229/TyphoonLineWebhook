@@ -211,9 +211,10 @@ def hybrid_context_management(user_id: str, token_threshold: int) -> List[Dict[s
         return current_history
 
 
-def generate_contextual_followup_message(user_id: str, db, deepseek_client, config):
-    """สร้างข้อความติดตามที่เป็นไปตามบริบทของการสนทนาล่าสุดโดยใช้ DeepSeek AI"""
+def generate_contextual_followup_message(user_id: str, db, config):
+    """สร้างข้อความติดตามที่เป็นไปตามบริบทของการสนทนาล่าสุดโดยใช้ xAI Grok"""
     from .utils import safe_api_call, clean_ai_response
+    from .llm import grok_client
     
     try:
         # ดึงประวัติการสนทนาล่าสุด 20 ครั้ง โดยใช้ max_tokens แทน limit
@@ -232,7 +233,7 @@ def generate_contextual_followup_message(user_id: str, db, deepseek_client, conf
         # เรียงจากเก่าไปใหม่เพื่อให้ AI เข้าใจบริบทที่ถูกต้อง
         recent_history = list(reversed(recent_history))
         
-        # สร้างบริบทการสนทนาสำหรับ DeepSeek แบบมีโครงสร้าง
+        # สร้างบริบทการสนทนาสำหรับ Grok แบบมีโครงสร้าง
         conversation_context = ""
         total_messages = len(recent_history)
         
@@ -241,7 +242,7 @@ def generate_contextual_followup_message(user_id: str, db, deepseek_client, conf
             msg_number = i + 1
             conversation_context += f"[{msg_number}/{total_messages}] ผู้ใช้: {user_msg}\n[{msg_number}/{total_messages}] ใจดี: {bot_resp}\n\n"
         
-        # สร้าง prompt สำหรับ DeepSeek พร้อมบริบทที่ดีขึ้น
+        # สร้าง prompt พร้อมบริบทที่ดีขึ้นสำหรับ Grok
         followup_prompt = f"""
 ต่อไปนี้คือประวัติการสนทนาล่าสุดระหว่างผู้ใช้และแชทบอท "ใจดี" ที่ช่วยเหลือคนเลิกสารเสพติด (รวม {total_messages} คู่ข้อความ):
 
@@ -260,21 +261,21 @@ def generate_contextual_followup_message(user_id: str, db, deepseek_client, conf
 
 ข้อความติดตาม:"""
 
-        # เรียกใช้ DeepSeek API ด้วยการตั้งค่าที่เหมาะสม
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        # เรียกใช้ xAI Grok API ด้วยการตั้งค่าที่เหมาะสม
+        text = grok_client.send_chat(
             messages=[
                 {"role": "system", "content": "คุณคือแชทบอท 'ใจดี' ที่ช่วยเหลือคนเลิกสารเสพติดด้วยความเข้าใจและเป็นมิตร คุณสามารถจำและอ้างอิงถึงการสนทนาก่อนหน้าได้"},
                 {"role": "user", "content": followup_prompt}
             ],
-            temperature=0.6,  # ลดลงเล็กน้อยเพื่อความสอดคล้อง
-            max_tokens=250,   # เพิ่มขึ้นเล็กน้อยให้มีพื้นที่พอสำหรับข้อความที่ยาวขึ้น
-            top_p=0.85        # ปรับค่าให้เหมาะสม
+            model=config.XAI_MODEL,
+            temperature=0.6,
+            max_tokens=250,
+            top_p=0.85,
         )
         
-        # ตรวจสอบและทำความสะอาด response
-        if response and response.choices and response.choices[0].message.content:
-            followup_message = response.choices[0].message.content.strip()
+        # ตรวจสอบและทำความสะอาดผลลัพธ์
+        if text:
+            followup_message = text.strip()
             
             # ทำความสะอาดข้อความ
             followup_message = clean_ai_response(followup_message)

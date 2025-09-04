@@ -19,8 +19,8 @@ class Config:
     LINE_CHANNEL_ACCESS_TOKEN: str
     LINE_CHANNEL_SECRET: str
     
-    # DeepSeek API Configuration
-    DEEPSEEK_API_KEY: str
+    # xAI Grok API Configuration
+    XAI_API_KEY: str
     
     # Redis Configuration
     REDIS_HOST: str
@@ -40,7 +40,7 @@ class Config:
     PORT: int
     
     # ตัวแปรที่มีค่าเริ่มต้นต้องมาหลังตัวแปรที่ไม่มีค่าเริ่มต้น
-    DEEPSEEK_MODEL: str = field(default="deepseek-chat")
+    XAI_MODEL: str = field(default="grok-4")
 
 def load_config():
     """
@@ -56,7 +56,7 @@ def load_config():
     required_vars = [
         'LINE_CHANNEL_ACCESS_TOKEN',
         'LINE_CHANNEL_SECRET',
-        'DEEPSEEK_API_KEY',
+        'XAI_API_KEY',
         'MYSQL_HOST',
         'MYSQL_USER',
         'MYSQL_PASSWORD',
@@ -79,7 +79,7 @@ def load_config():
         'ENVIRONMENT': 'development',
         'LOG_LEVEL': 'INFO',
         'PORT': '5000',
-        'DEEPSEEK_MODEL': 'deepseek-chat'
+        'XAI_MODEL': 'grok-4'
     }
     
     for var, default in defaults.items():
@@ -100,7 +100,7 @@ def load_config():
     config = Config(
         LINE_CHANNEL_ACCESS_TOKEN=os.getenv('LINE_CHANNEL_ACCESS_TOKEN'),
         LINE_CHANNEL_SECRET=os.getenv('LINE_CHANNEL_SECRET'),
-        DEEPSEEK_API_KEY=os.getenv('DEEPSEEK_API_KEY'),
+        XAI_API_KEY=os.getenv('XAI_API_KEY'),
         REDIS_HOST=os.getenv('REDIS_HOST'),
         REDIS_PORT=int(os.getenv('REDIS_PORT')),
         REDIS_DB=int(os.getenv('REDIS_DB')),
@@ -112,7 +112,7 @@ def load_config():
         ENVIRONMENT=os.getenv('ENVIRONMENT'),
         LOG_LEVEL=os.getenv('LOG_LEVEL'),
         PORT=int(os.getenv('PORT')),
-        DEEPSEEK_MODEL=os.getenv('DEEPSEEK_MODEL', 'deepseek-chat')
+        XAI_MODEL=os.getenv('XAI_MODEL', 'grok-4')
     )
     
     return config

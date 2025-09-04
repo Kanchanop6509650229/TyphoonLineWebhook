@@ -1,6 +1,6 @@
 """
 แชทบอท 'ใจดี' - แอปพลิเคชันหลัก
-โค้ดหลักสำหรับการจัดการข้อความจาก LINE API และการตอบกลับด้วย DeepSeek API
+โค้ดหลักสำหรับการจัดการข้อความจาก LINE API และการตอบกลับด้วย xAI Grok API
 """
 import os
 import json
@@ -16,7 +16,6 @@ from flask import Flask, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, FollowEvent
-from openai import OpenAI
 import redis
 from random import choice
 import signal
@@ -27,7 +26,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # นำเข้าโมดูลภายในโปรเจค
 from .middleware.rate_limiter import init_limiter
 from .config import load_config, SYSTEM_MESSAGES, GENERATION_CONFIG, SUMMARY_GENERATION_CONFIG, TOKEN_THRESHOLD
-from .utils import safe_db_operation, safe_api_call, clean_ai_response, handle_deepseek_api_error, check_hospital_inquiry, get_hospital_information_message
+from .utils import safe_db_operation, safe_api_call, clean_ai_response, check_hospital_inquiry, get_hospital_information_message, handle_grok_api_error
+from .llm import grok_client
 from .chat_history_db import ChatHistoryDB
 from .token_counter import TokenCounter
 from .session_manager import (
@@ -115,12 +115,7 @@ try:
     line_bot_api = LineBotApi(config.LINE_CHANNEL_ACCESS_TOKEN)
     handler = WebhookHandler(config.LINE_CHANNEL_SECRET)
 
-    # เริ่มต้น DeepSeek client
-    deepseek_client = OpenAI(api_key=config.DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
-
-    # เริ่มต้น Async client สำหรับการประมวลผลเบื้องหลัง
-    async_deepseek = AsyncDeepseekClient(config.DEEPSEEK_API_KEY, config.DEEPSEEK_MODEL)
-    threading.Thread(target=lambda: asyncio.run(async_deepseek.setup())).start()
+    # ใช้ Grok client ผ่านโมดูลรวมศูนย์ app/llm/grok_client.py
 
     # เริ่มต้นตัวนับโทเค็นที่ปรับปรุงแล้ว
     token_counter = TokenCounter(cache_size=5000)
@@ -200,7 +195,7 @@ def health_check():
             'services': {
                 'database': 'unknown',
                 'redis': 'unknown',
-                'deepseek_api': 'unknown'
+                'xai_api': 'unknown'
             }
         }
         
@@ -223,15 +218,15 @@ def health_check():
             health_status['services']['redis'] = f'error: {str(e)[:50]}'
             health_status['status'] = 'degraded'
         
-        # Check DeepSeek API (simple check)
+        # Check xAI API (simple check)
         try:
             # This is a lightweight check - we don't actually call the API
-            if config.DEEPSEEK_API_KEY:
-                health_status['services']['deepseek_api'] = 'configured'
+            if config.XAI_API_KEY:
+                health_status['services']['xai_api'] = 'configured'
             else:
-                health_status['services']['deepseek_api'] = 'not_configured'
+                health_status['services']['xai_api'] = 'not_configured'
         except Exception as e:
-            health_status['services']['deepseek_api'] = f'error: {str(e)[:50]}'
+            health_status['services']['xai_api'] = f'error: {str(e)[:50]}'
         
         # Determine overall status code
         if health_status['status'] == 'healthy':
@@ -278,16 +273,16 @@ def summarize_conversation_chunk(chunk):
         for _, msg, resp in chunk:
             summary_prompt += f"\nผู้ใช้: {msg}\nบอท: {resp}\n"
 
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        text = grok_client.send_chat(
             messages=[
                 SYSTEM_MESSAGES,
                 {"role": "user", "content": summary_prompt}
             ],
-            **SUMMARY_GENERATION_CONFIG
+            model=config.XAI_MODEL,
+            **SUMMARY_GENERATION_CONFIG,
         )
 
-        return response.choices[0].message.content
+        return text
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดใน summarize_conversation_chunk: {str(e)}")
         return ""
@@ -450,16 +445,16 @@ def summarize_conversation_history(history):
         for _, msg, resp in history:
             summary_prompt += f"\nผู้ใช้: {msg}\nบอท: {resp}\n"
 
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        text = grok_client.send_chat(
             messages=[
                 SYSTEM_MESSAGES,
                 {"role": "user", "content": summary_prompt}
             ],
-            **SUMMARY_GENERATION_CONFIG
+            model=config.XAI_MODEL,
+            **SUMMARY_GENERATION_CONFIG,
         )
 
-        return response.choices[0].message.content
+        return text
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดใน summarize_conversation_history: {str(e)}")
         return ""
@@ -503,17 +498,17 @@ def summarize_by_topic(history):
         topic_prompt = topic_prompt.format(conversation=conversation_text)
 
         # ส่งไปให้ AI ประมวลผล
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        text = grok_client.send_chat(
             messages=[
                 SYSTEM_MESSAGES,
                 {"role": "user", "content": topic_prompt}
             ],
-            temperature=0.2,  # ลดความสร้างสรรค์เพื่อให้ได้ผลลัพธ์ที่เป็นระเบียบ
-            max_tokens=800
+            model=config.XAI_MODEL,
+            temperature=0.2,
+            max_tokens=800,
         )
 
-        return response.choices[0].message.content
+        return text
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดใน summarize_by_topic: {str(e)}")
         return ""
@@ -851,7 +846,7 @@ def check_and_send_follow_ups():
                 user_id = user_id.decode('utf-8')
 
             # สร้างข้อความติดตามที่เป็นไปตามบริบทของการสนทนา
-            follow_up_message = generate_contextual_followup_message(user_id, db, deepseek_client, config)
+            follow_up_message = generate_contextual_followup_message(user_id, db, config)
             try:
                 line_bot_api.push_message(
                     user_id,
@@ -971,7 +966,7 @@ def start_loading_animation(user_id, duration=60):
 @safe_api_call
 def summarize_form_data(form_data):
     """
-    สรุปข้อมูลจาก Google Form โดยใช้ DeepSeek AI
+    สรุปข้อมูลจาก Google Form โดยใช้ xAI Grok
     
     Args:
         form_data (dict): ข้อมูลจาก Google Form
@@ -1013,21 +1008,19 @@ def summarize_form_data(form_data):
 โปรดสรุปให้กระชับ ชัดเจน และเป็นประโยชน์ต่อการให้คำปรึกษา
 """
         
-        # เรียก DeepSeek API
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        # เรียก xAI Grok API
+        summary = grok_client.send_chat(
             messages=[
                 {
-                    "role": "system", 
-                    "content": "คุณคือผู้เชี่ยวชาญด้านการบำบัดสารเสพติด ช่วยสรุปข้อมูลผู้ใช้อย่างเป็นมืออาชีพ"
+                    "role": "system",
+                    "content": "คุณคือผู้เชี่ยวชาญด้านการบำบัดสารเสพติด ช่วยสรุปข้อมูลผู้ใช้อย่างเป็นมืออาชีพ",
                 },
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt},
             ],
-            temperature=0.3,  # ใช้ค่าต่ำเพื่อความแม่นยำ
-            max_tokens=1000
+            model=config.XAI_MODEL,
+            temperature=0.3,
+            max_tokens=1000,
         )
-        
-        summary = response.choices[0].message.content
         return clean_ai_response(summary)
         
     except Exception as e:
@@ -1237,12 +1230,12 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
         
         while retry_count < max_retries and bot_response is None:
             try:
-                response = generate_ai_response_with_timeout(messages, timeout=30)
+                response_text = generate_ai_response_with_timeout(messages, timeout=30)
                 
-                if not response or not hasattr(response, 'choices') or not response.choices:
-                    raise ValueError("Invalid AI response structure")
+                if not response_text:
+                    raise ValueError("Empty AI response")
                 
-                bot_response = clean_ai_response(response.choices[0].message.content)
+                bot_response = clean_ai_response(response_text)
                 
                 if not bot_response or len(bot_response.strip()) == 0:
                     raise ValueError("Empty response from AI")
@@ -1393,25 +1386,23 @@ def create_minimal_session(user_context: Optional[str]) -> List[Dict[str, str]]:
     return messages
 
 
-def generate_ai_response_with_timeout(messages: List[Dict[str, str]], timeout: int = 30):
-    """เรียก AI API พร้อม timeout"""
-    # ใช้ threading หรือ asyncio สำหรับ timeout
+def generate_ai_response_with_timeout(messages: List[Dict[str, str]], timeout: int = 30) -> str:
+    """เรียก xAI Grok API พร้อม timeout และคืนข้อความตอบกลับ"""
     import concurrent.futures
-    
-    # กรองข้อความก่อนส่งไปยัง API
+
     filtered_messages = filter_messages_for_api(messages)
-    
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(
-            deepseek_client.chat.completions.create,
-            model=config.DEEPSEEK_MODEL,
+
+    def _call() -> str:
+        return grok_client.send_chat(
             messages=[SYSTEM_MESSAGES] + filtered_messages,
-            **GENERATION_CONFIG
+            model=config.XAI_MODEL,
+            **GENERATION_CONFIG,
         )
-        
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(_call)
         try:
-            response = future.result(timeout=timeout)
-            return response
+            return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
             raise requests.exceptions.Timeout(f"AI API timeout after {timeout} seconds")
 
@@ -1911,25 +1902,19 @@ def handle_response_timing(start_time, animation_success):
         time.sleep(5 - elapsed_time)
 
 @safe_api_call
-def generate_ai_response(messages):
-    """สร้างการตอบกลับด้วย AI โดยมีการจัดการข้อผิดพลาด"""
+def generate_ai_response(messages) -> str:
+    """สร้างการตอบกลับด้วย AI โดยมีการจัดการข้อผิดพลาด (xAI Grok)"""
     try:
-        # กรองข้อความก่อนส่งไปยัง API
         filtered_messages = filter_messages_for_api(messages)
-        
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        text = grok_client.send_chat(
             messages=[SYSTEM_MESSAGES] + filtered_messages,
-            **GENERATION_CONFIG
+            model=config.XAI_MODEL,
+            **GENERATION_CONFIG,
         )
-
-        # ตรวจสอบการตอบกลับเบื้องต้น
-        if not response or not hasattr(response, 'choices') or not response.choices:
-            logging.error("ได้รับการตอบกลับที่ไม่ถูกต้องจาก DeepSeek API")
-            raise ValueError("Invalid response from DeepSeek API")
-
-        return response
-
+        if not text:
+            logging.error("ได้รับการตอบกลับที่ไม่ถูกต้องจาก xAI Grok API")
+            raise ValueError("Invalid response from xAI Grok API")
+        return text
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการสร้างการตอบกลับ AI: {str(e)}")
         raise
@@ -2036,18 +2021,17 @@ def check_line_api_health():
     except Exception:
         return False
 
-def check_deepseek_api_health():
-    """ตรวจสอบการเชื่อมต่อ DeepSeek API"""
+def check_grok_api_health():
+    """ตรวจสอบการเชื่อมต่อ xAI Grok API"""
     try:
-        # Make a minimal API call to check connectivity
-        deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        _ = grok_client.send_chat(
             messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1
+            model=config.XAI_MODEL,
+            max_tokens=1,
         )
         return True
     except Exception as e:
-        logging.debug(f"DeepSeek API health check failed: {str(e)}")
+        logging.debug(f"xAI Grok API health check failed: {str(e)}")
         return False
 
 def get_uptime():
@@ -2208,13 +2192,11 @@ def handle_shutdown(sig=None, frame=None):
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการปิดการเชื่อมต่อ Redis: {str(e)}")
 
-    # ปิดการเชื่อมต่อ DeepSeek API
+    # ปิดการเชื่อมต่อ xAI Grok API (ไม่มีการเชื่อมต่อถาวรในปัจจุบัน)
     try:
-        if hasattr(async_deepseek, 'client') and async_deepseek.client:
-            asyncio.run(async_deepseek.close())
-        logging.info("ปิดการเชื่อมต่อ DeepSeek API เรียบร้อย")
+        logging.info("ปิดการเชื่อมต่อ xAI Grok API เรียบร้อย")
     except Exception as e:
-        logging.error(f"เกิดข้อผิดพลาดในการปิดการเชื่อมต่อ DeepSeek API: {str(e)}")
+        logging.error(f"เกิดข้อผิดพลาดในการปิดการเชื่อมต่อ xAI Grok API: {str(e)}")
 
     logging.info("ปิดแอปพลิเคชันเรียบร้อย")
     exit(0)

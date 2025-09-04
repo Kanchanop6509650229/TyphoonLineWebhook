@@ -23,6 +23,7 @@ logging.basicConfig(
 try:
     from .app_main import app, init_scheduler
     from .async_api import AsyncDeepseekClient
+    from .llm.grok_client import send_chat, astream_chat, stream_chat, astream_chat_iter
     from .chat_history_db import ChatHistoryDB
     from .token_counter import TokenCounter
     from .utils import safe_api_call, safe_db_operation
@@ -48,6 +49,10 @@ try:
         'app',
         'init_scheduler',
         'AsyncDeepseekClient',
+        'send_chat',
+        'astream_chat',
+        'stream_chat',
+        'astream_chat_iter',
         'ChatHistoryDB',
         'TokenCounter',
         'safe_api_call',

@@ -65,8 +65,8 @@ if not exist .env (
         echo LINE_CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
         echo LINE_CHANNEL_SECRET=your_line_channel_secret
         echo.
-        echo # DeepSeek API Configuration
-        echo DEEPSEEK_API_KEY=your_deepseek_api_key
+        echo # xAI Grok API Configuration
+        echo XAI_API_KEY=your_xai_api_key
         echo.
         echo # Redis Configuration
         echo REDIS_HOST=localhost

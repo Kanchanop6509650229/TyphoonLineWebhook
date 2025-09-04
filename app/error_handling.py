@@ -218,9 +218,9 @@ class ErrorHandler:
     
     def _initialize_circuit_breakers(self) -> None:
         """Initialize circuit breakers for external services"""
-        # DeepSeek API circuit breaker
-        self.circuit_breakers['deepseek_api'] = CircuitBreaker(
-            name='deepseek_api',
+        # xAI Grok API circuit breaker
+        self.circuit_breakers['xai_api'] = CircuitBreaker(
+            name='xai_api',
             failure_threshold=5,
             timeout=300,  # 5 minutes
             expected_exception=(Exception,)
