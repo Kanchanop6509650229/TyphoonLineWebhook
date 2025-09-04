@@ -150,4 +150,4 @@ SUMMARY_GENERATION_CONFIG = {
 
 # ค่า token threshold สำหรับจัดการประวัติการสนทนา
 # ตั้งไว้ที่ 55,000 ใช้ประโยชน์จาก context window 60k โดยเผื่อพื้นที่สำหรับข้อความใหม่
-TOKEN_THRESHOLD = 55000
+TOKEN_THRESHOLD = 100000
