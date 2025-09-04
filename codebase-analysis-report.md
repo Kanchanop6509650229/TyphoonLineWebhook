@@ -9,7 +9,7 @@ This report analyzes the TyphoonLineWebhook system, a LINE-based chatbot for sub
 ```mermaid
 graph TB
     A[LINE API] --> B[Flask App Server]
-    B --> C[DeepSeek API]
+    B --> C[Grok API]
     B --> D[Redis Cache]
     B --> E[MySQL Database]
     B --> F[Background Scheduler]
@@ -27,8 +27,8 @@ graph TB
 - **Backend Framework**: Flask (Good choice for small-medium scale)
 - **Database**: MySQL with connection pooling (Adequate)
 - **Cache**: Redis (Excellent choice)
-- **External APIs**: LINE Messaging API, DeepSeek API
-- **Async Processing**: Custom AsyncDeepseekClient
+- **External APIs**: LINE Messaging API, Grok API
+- **Async Processing**: Custom AsyncGrokClient
 - **Scheduling**: APScheduler
 
 ## Critical Weaknesses & Issues
@@ -314,7 +314,7 @@ flowchart TD
 ## Cost Optimization Strategies
 
 ### 1. Resource Usage Optimization
-- Implement request batching for DeepSeek API calls
+- Implement request batching for Grok API calls
 - Optimize token counting to reduce API costs
 - Add intelligent conversation summarization
 - Implement user activity-based scaling

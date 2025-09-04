@@ -177,7 +177,7 @@ def generate_ai_response(self, user_id: str, user_message: str, conversation_his
     
     try:
         # Import here to avoid circular imports
-        from .async_api import AsyncDeepseekClient
+        from .async_api import AsyncGrokClient
         from .error_handling import get_error_handler, CircuitState
         import asyncio
         
@@ -190,7 +190,7 @@ def generate_ai_response(self, user_id: str, user_message: str, conversation_his
         
         # Create async client and generate response
         async def generate_response():
-            client = AsyncDeepseekClient(
+            client = AsyncGrokClient(
                 api_key=system_config.get('xai_api_key'),
                 model=system_config.get('xai_model', 'grok-4')
             )
@@ -274,14 +274,14 @@ def process_conversation_summary(self, user_id: str, conversation_history: List[
         Dict containing summary and metadata
     """
     try:
-        from .async_api import AsyncDeepseekClient
+        from .async_api import AsyncGrokClient
         import asyncio
         
         if not conversation_history:
             return {'success': True, 'summary': '', 'token_count': 0}
         
         async def generate_summary():
-            client = AsyncDeepseekClient(
+            client = AsyncGrokClient(
                 api_key=os.getenv('XAI_API_KEY'),
                 model=os.getenv('XAI_MODEL', 'grok-4')
             )

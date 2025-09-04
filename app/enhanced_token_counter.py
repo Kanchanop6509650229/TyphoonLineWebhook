@@ -353,7 +353,7 @@ class EnhancedTokenCounter:
         # Calculate base overhead and message content tokens
         total_tokens = self._calculate_message_tokens(messages)
 
-        # Add safety margin for DeepSeek specifics (5%)
+        # Add safety margin for Grok specifics (5%)
         total_tokens = int(total_tokens * 1.05)
 
         return total_tokens

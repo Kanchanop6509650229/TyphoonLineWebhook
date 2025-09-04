@@ -8,9 +8,9 @@ from typing import Dict, List, Any, Optional
 from .llm import grok_client
 
 
-class AsyncDeepseekClient:
+class AsyncGrokClient:
     """
-    ความเข้ากันได้แบบบางสำหรับโค้ดเดิมที่เรียก DeepSeek
+    ความเข้ากันได้แบบบางสำหรับโค้ดเดิมที่เรียก Grok
     ภายในเปลี่ยนไปใช้ xAI Grok ผ่าน grok_client
     """
 
