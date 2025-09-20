@@ -22,7 +22,6 @@ logging.basicConfig(
 # นำเข้าส่วนประกอบหลักเพื่อให้ใช้งานได้ง่าย
 try:
     from .app_main import app, init_scheduler
-    from .async_api import AsyncGrokClient
     from .llm.grok_client import send_chat, astream_chat, stream_chat, astream_chat_iter
     from .chat_history_db import ChatHistoryDB
     from .token_counter import TokenCounter
@@ -48,7 +47,6 @@ try:
     __all__ = [
         'app',
         'init_scheduler',
-        'AsyncGrokClient',
         'send_chat',
         'astream_chat',
         'stream_chat',

@@ -9,12 +9,11 @@ from logging.handlers import RotatingFileHandler
 import requests
 import time
 import threading
-import asyncio
 import re
 from datetime import datetime, timedelta
 from flask import Flask, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
+from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, FollowEvent
 import redis
 from random import choice
@@ -22,6 +21,7 @@ import signal
 import atexit
 from waitress import serve
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.base import SchedulerNotRunningError
 
 # นำเข้าโมดูลภายในโปรเจค
 from .middleware.rate_limiter import init_limiter
@@ -47,7 +47,6 @@ from .risk_assessment import (
     save_progress_data,
     generate_progress_report,
 )
-from .async_api import AsyncGrokClient
 from .database_init import initialize_database
 from .database_manager import DatabaseManager
 from .error_handling import (
@@ -883,38 +882,41 @@ def send_processing_status(user_id, reply_token):
         logging.error(f"เกิดข้อผิดพลาดในการส่งสถานะประมวลผล: {str(e)}")
         return False
 
-def send_final_response(user_id, bot_response):
-    """ส่งคำตอบสุดท้ายหลังประมวลผลเสร็จ
-
-    แบ่งคำตอบออกเป็นหลายข้อความเมื่อมีสัญลักษณ์หัวข้อหรือบรรทัดว่างสองบรรทัด
-    เพื่อให้แต่ละหัวข้อแสดงเป็นบับเบิลแยกบน LINE
-    หากมีมากกว่า 5 ข้อความ จะส่งเป็นหลายครั้ง
-    """
+def send_final_response(user_id, bot_response, reply_token=None):
+    """ส่งคำตอบสุดท้ายหลังประมวลผลเสร็จ พร้อมรองรับการ reply"""
     try:
-        # แยกข้อความด้วยตัวแบ่งหัวข้อ (•) หรือบรรทัดว่างอย่างน้อย 2 บรรทัด
+        text = bot_response or ""
         segments = [
-            seg.strip() for seg in re.split(r"\n{2,}|•", bot_response) if seg.strip()
+            seg.strip() for seg in re.split(r"\n{2,}|•", text) if seg.strip()
         ]
-        
-        # ตรวจสอบจำนวน segments
-        if not segments:
-            # ถ้าไม่มี segments ให้ส่งข้อความเดิม
-            messages = [TextSendMessage(text=bot_response)]
-            line_bot_api.push_message(user_id, messages)
-        elif len(segments) <= 5:
-            # จำนวน segments อยู่ในขอบเขตที่อนุญาต (1-5)
+
+        if segments:
             messages = [TextSendMessage(text=segment) for segment in segments]
-            line_bot_api.push_message(user_id, messages)
         else:
-            # ถ้าเกิน 5 segments ให้แบ่งส่งเป็นหลายครั้ง
-            for i in range(0, len(segments), 5):
-                batch = segments[i:i+5]
-                messages = [TextSendMessage(text=segment) for segment in batch]
-                line_bot_api.push_message(user_id, messages)
-                # หน่วงเวลาเล็กน้อยระหว่างการส่งแต่ละครั้ง เพื่อไม่ให้ส่งพร้อมกัน
-                if i + 5 < len(segments):
-                    time.sleep(0.5)
-        
+            messages = [TextSendMessage(text=text)]
+
+        to_push = messages
+
+        if reply_token:
+            reply_batch = messages[:5]
+            try:
+                if reply_batch:
+                    payload = reply_batch if len(reply_batch) > 1 else reply_batch[0]
+                    line_bot_api.reply_message(reply_token, payload)
+                    to_push = messages[5:]
+            except LineBotApiError as exc:
+                logging.warning(f"Reply message failed for user {user_id}: {exc}")
+                to_push = messages
+
+        for index in range(0, len(to_push), 5):
+            batch = to_push[index:index + 5]
+            if not batch:
+                continue
+            payload = batch if len(batch) > 1 else batch[0]
+            line_bot_api.push_message(user_id, payload)
+            if index + 5 < len(to_push):
+                time.sleep(0.5)
+
         return True
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการส่งคำตอบสุดท้าย: {str(e)}")
@@ -1150,36 +1152,39 @@ def handle_locked_user(user_id):
 
 # ฟังก์ชันสำหรับประมวลผลข้อความของผู้ใช้
 def process_user_message(user_id, user_message, reply_token):
-    """ประมวลผลข้อความผู้ใช้พร้อมภาพเคลื่อนไหวและการจัดการเซสชัน"""
+    """ประมวลผลข้อความผู้ใช้พร้อมจัดการสถานะและการตอบกลับ"""
     start_time = time.time()
     redis_client.delete(f"wait_notice:{user_id}")
 
-    # เริ่มภาพเคลื่อนไหวการโหลด
-    animation_success, _ = start_loading_animation(user_id)
-
-    # ตรวจสอบการหมดเวลาเซสชัน
     if check_session_timeout(user_id):
-        send_session_timeout_message(user_id)
+        send_session_timeout_message(user_id, reply_token=reply_token)
         return
 
-    # อัพเดทกิจกรรมล่าสุดของผู้ใช้
     update_last_activity(user_id)
 
-    # ตรวจสอบและจัดการคำสั่ง
     if user_message.startswith('/'):
-        handle_command_with_processing(user_id, user_message)
-        return
+        if handle_command_with_processing(user_id, user_message, reply_token=reply_token):
+            return
 
-    # ตรวจสอบคำสอบถามเกี่ยวกับสถานพยาบาล
     if check_hospital_inquiry(user_message):
         hospital_response = get_hospital_information_message()
-        send_final_response(user_id, hospital_response)
+        send_final_response(user_id, hospital_response, reply_token=reply_token)
         return
 
-    # ประมวลผลกับ AI และส่งการตอบกลับ
-    process_ai_response_with_context(user_id, user_message, start_time, animation_success)
+    animation_success, _ = start_loading_animation(user_id)
+    if not animation_success and reply_token:
+        if send_processing_status(user_id, reply_token):
+            reply_token = None
 
-def process_ai_response_with_context(user_id: str, user_message: str, start_time: float, animation_success: bool):
+    process_ai_response_with_context(
+        user_id,
+        user_message,
+        start_time,
+        animation_success,
+        reply_token,
+    )
+
+def process_ai_response_with_context(user_id: str, user_message: str, start_time: float, animation_success: bool, reply_token: Optional[str]):
     """
     สร้างการตอบกลับ AI โดยใช้บริบทจาก form พร้อมการจัดการข้อผิดพลาดที่ดีขึ้น
     """
@@ -1297,7 +1302,7 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
         
         # 9. ส่งการตอบกลับ
         try:
-            success = send_final_response(user_id, bot_response)
+            success = send_final_response(user_id, bot_response, reply_token=reply_token)
             if not success:
                 raise create_legacy_chatbot_error(
                     ErrorType.MESSAGE_SEND_ERROR,
@@ -1306,7 +1311,7 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
                 
             # ถ้าใช้ fallback หรือมี error แจ้งให้ผู้ใช้ทราบ
             if fallback_response or error_occurred:
-                send_system_notification(user_id, fallback_response, error_occurred)
+                send_system_notification(user_id, fallback_response is not None, error_occurred)
                 
         except Exception as e:
             logging.critical(f"ไม่สามารถส่งข้อความให้ผู้ใช้ {user_id}: {str(e)}")
@@ -1322,12 +1327,12 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
         
     except ChatbotError as e:
         # จัดการ custom errors
-        handle_chatbot_error(e, user_id, user_message)
+        handle_chatbot_error(e, user_id, user_message, reply_token=reply_token)
         
     except Exception as e:
         # จัดการ unexpected errors
         logging.critical(f"Unexpected error in process_ai_response: {str(e)}", exc_info=True)
-        handle_unexpected_error(e, user_id, user_message)
+        handle_unexpected_error(e, user_id, user_message, reply_token=reply_token)
 
 
 def prepare_conversation_messages(user_id: str, user_context: Optional[str]) -> List[Dict[str, str]]:
@@ -1518,41 +1523,37 @@ def create_legacy_chatbot_error(error_type: ErrorType, message: str, original_er
     return LegacyChatbotError(error_type, message, original_error)
 
 
-def handle_chatbot_error(error: ChatbotError, user_id: str, user_message: str):
+def handle_chatbot_error(error: ChatbotError, user_id: str, user_message: str, reply_token: Optional[str] = None):
     """จัดการข้อผิดพลาดที่คาดการณ์ได้ - compatible with both legacy and new error systems"""
-    
-    # Handle both old and new ChatbotError formats
-    if hasattr(error, 'error_type'):  # Legacy format
+
+    if hasattr(error, 'error_type'):
         logging.error(f"ChatbotError [Legacy-{error.error_type.value}]: {error.message}")
-        
-        # ส่งข้อความที่เหมาะสมตามประเภทข้อผิดพลาด
+
         error_messages = {
             ErrorType.AI_API_ERROR: "ขออภัยค่ะ ระบบ AI กำลังมีปัญหา กรุณาลองใหม่อีกครั้ง",
             ErrorType.TOKEN_MANAGEMENT_ERROR: "กำลังจัดระเบียบข้อมูล กรุณารอสักครู่",
             ErrorType.DATABASE_ERROR: "มีปัญหาในการบันทึกข้อมูล แต่เรายังคุยกันต่อได้ค่ะ",
-            ErrorType.MESSAGE_SEND_ERROR: "ไม่สามารถส่งข้อความได้ กรุณาตรวจสอบการเชื่อมต่อ"
+            ErrorType.MESSAGE_SEND_ERROR: "ไม่สามารถส่งข้อความได้ กรุณาตรวจสอบการเชื่อมต่อ",
         }
-        
+
         message = error_messages.get(
-            error.error_type, 
-            "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่"
+            error.error_type,
+            "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่",
         )
-    else:  # New enhanced format
+    else:
         logging.error(f"ChatbotError [{error.category.value}-{error.severity.value}]: {error.message}")
-        # Use the built-in user_message from the new error system
         message = error.user_message or "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่"
-    
+
     try:
-        send_final_response(user_id, message)
-    except:
-        # ถ้าส่งไม่ได้จริงๆ บันทึก log
+        send_final_response(user_id, message, reply_token=reply_token)
+    except Exception:
         logging.critical(f"Cannot send error message to user {user_id}")
 
 
-def handle_unexpected_error(error: Exception, user_id: str, user_message: str):
+def handle_unexpected_error(error: Exception, user_id: str, user_message: str, reply_token: Optional[str] = None):
     """จัดการข้อผิดพลาดที่ไม่คาดคิด"""
     error_id = f"ERR_{datetime.now().strftime('%Y%m%d%H%M%S')}_{user_id[:8]}"
-    
+
     logging.critical(
         f"Unexpected error {error_id}:\n"
         f"User: {user_id}\n"
@@ -1560,19 +1561,17 @@ def handle_unexpected_error(error: Exception, user_id: str, user_message: str):
         f"Error: {str(error)}\n"
         f"Traceback: {traceback.format_exc()}"
     )
-    
-    # บันทึกข้อผิดพลาดสำหรับการวิเคราะห์
+
     save_error_for_analysis(error_id, user_id, user_message, error)
-    
-    # ส่งข้อความให้ผู้ใช้
+
     try:
         message = (
             "ขออภัยค่ะ เกิดข้อผิดพลาดที่ไม่คาดคิด\n"
             f"รหัสข้อผิดพลาด: {error_id}\n\n"
             "กรุณาลองใหม่อีกครั้ง หรือติดต่อผู้ดูแลระบบ"
         )
-        send_final_response(user_id, message)
-    except:
+        send_final_response(user_id, message, reply_token=reply_token)
+    except Exception:
         pass
 
 
@@ -1689,7 +1688,7 @@ def prepare_conversation_context(messages, optimized_history):
             # ใช้ role พิเศษสำหรับการสรุปที่ไม่แสดงให้ผู้ใช้เห็น
             messages.append({"role": "system_summary", "content": f"สรุปการสนทนาก่อนหน้า: {summary}"})
 
-def send_session_timeout_message(user_id):
+def send_session_timeout_message(user_id, reply_token=None):
     """ส่งข้อความเซสชันหมดอายุ"""
     welcome_back = (
         "สวัสดีค่ะ ยินดีต้อนรับกลับมา 👋\n\n"
@@ -1699,39 +1698,41 @@ def send_session_timeout_message(user_id):
         "💡 ต้องการคำแนะนำเพิ่มเติม พิมพ์: /help\n\n"
         "คุณต้องการพูดคุยเกี่ยวกับเรื่องอะไรดีคะวันนี้?"
     )
-    send_final_response(user_id, welcome_back)
+    send_final_response(user_id, welcome_back, reply_token=reply_token)
 
-def handle_command_with_processing(user_id, command):
-    """จัดการคำสั่งพร้อมแสดงสถานะประมวลผล"""
 
-    # ตรวจสอบคำสั่ง verify
-    if command.startswith('/verify'):
-        # ตรวจสอบว่าผู้ใช้ลงทะเบียนแล้วหรือไม่
+def handle_command_with_processing(user_id, command, reply_token=None):
+    """จัดการคำสั่งและส่งผลลัพธ์กลับไปยังผู้ใช้ หากจัดการได้จะคืน True"""
+    normalized = command.strip()
+
+    if normalized.startswith('/verify'):
         if is_user_registered(user_id):
             send_final_response(
                 user_id,
                 "✅ คุณได้ลงทะเบียนและยืนยันตัวตนเรียบร้อยแล้ว\n"
                 "ไม่จำเป็นต้องยืนยันอีกครั้ง คุณสามารถใช้บริการของน้องใจดีได้ตามปกติ\n\n"
-                "พิมพ์ /help เพื่อดูคำสั่งและบริการที่มี"
+                "พิมพ์ /help เพื่อดูคำสั่งและบริการที่มี",
+                reply_token=reply_token,
             )
-            return
+            return True
 
-        # ดำเนินการต่อสำหรับผู้ที่ยังไม่ได้ลงทะเบียน
-        parts = command.split()
+        parts = normalized.split()
         if len(parts) != 2:
-            send_final_response(user_id, "รูปแบบไม่ถูกต้อง กรุณาพิมพ์ \"/verify\" ตามด้วยรหัส 6 หลัก เช่น \"/verify 123456\"")
-            return
+            send_final_response(
+                user_id,
+                "รูปแบบไม่ถูกต้อง กรุณาพิมพ์ \"/verify\" ตามด้วยรหัส 6 หลัก เช่น \"/verify 123456\"",
+                reply_token=reply_token,
+            )
+            return True
 
         confirmation_code = parts[1].strip()
         success, message = register_user_with_code(user_id, confirmation_code)
-        send_final_response(user_id, message)
-        return
-
-    animation_success, _ = start_loading_animation(user_id, duration=10)
+        send_final_response(user_id, message, reply_token=reply_token)
+        return True
 
     response_text = None
 
-    if command == '/reset':
+    if normalized == '/reset':
         db.clear_user_history(user_id)
         redis_client.delete(f"chat_session:{user_id}")
         redis_client.delete(f"session_tokens:{user_id}")
@@ -1744,8 +1745,7 @@ def handle_command_with_processing(user_id, command):
             "คุณต้องการพูดคุยเกี่ยวกับเรื่องอะไรดีคะ?"
         )
 
-    elif command == '/optimize':
-        # เพิ่มคำสั่งใหม่สำหรับการปรับประวัติการสนทนาโดยตรง
+    elif normalized == '/optimize':
         token_count_before = get_session_token_count(user_id)
         hybrid_context_management(user_id, TOKEN_THRESHOLD)
         token_count_after = get_session_token_count(user_id)
@@ -1753,15 +1753,14 @@ def handle_command_with_processing(user_id, command):
         response_text = (
             f"🔄 ปรับปรุงประวัติการสนทนาเรียบร้อยแล้วค่ะ\n\n"
             f"จำนวนโทเค็น: {token_count_before} → {token_count_after} ({(token_count_before - token_count_after)} ลดลง)\n\n"
-            f"ประวัติการสนทนาสำคัญยังคงถูกเก็บไว้ และบอทยังเข้าใจบริบทการสนทนาของเรา\n"
-            f"เราสามารถสนทนาต่อได้ตามปกติค่ะ"
+            "ประวัติการสนทนาสำคัญยังคงถูกเก็บไว้ และบอทยังเข้าใจบริบทการสนทนาของเรา\n"
+            "เราสามารถสนทนาต่อได้ตามปกติค่ะ"
         )
 
-    elif command == '/tokens':
-        # เพิ่มคำสั่งสำหรับตรวจสอบจำนวนโทเค็นในเซสชัน
+    elif normalized == '/tokens':
         token_count = get_session_token_count(user_id)
         max_tokens = TOKEN_THRESHOLD
-        percentage = (token_count / max_tokens) * 100
+        percentage = (token_count / max_tokens) * 100 if max_tokens else 0
 
         response_text = (
             f"📊 สถิติการใช้โทเค็น\n\n"
@@ -1771,22 +1770,22 @@ def handle_command_with_processing(user_id, command):
             f"{'⚠️ ใกล้ถึงขีดจำกัด โปรดใช้ /optimize เพื่อปรับปรุงประวัติ' if percentage > 80 else '✅ อยู่ในเกณฑ์ปกติ'}"
         )
 
-    elif command == '/followup':
+    elif normalized == '/followup':
         response_text = get_follow_up_status(user_id)
 
-    elif command == '/help':
+    elif normalized == '/help':
         response_text = (
             "สวัสดีค่ะ 👋 ฉันคือน้องใจดี ผู้ช่วยดูแลและให้คำปรึกษาสำหรับผู้ที่ต้องการเลิกใช้สารเสพติด"
             "💬 ฉันสามารถช่วยคุณได้ดังนี้:\n"
             "- พูดคุยและให้กำลังใจในการเลิกใช้สารเสพติด\n"
-            "- ให้ข้อมูลเกี่ยวกับผลกระทบของสารเสพติดต่อร่างกายและจิตใจ\n"
-            "- แนะนำเทคนิคจัดการความอยากและความเครียด\n"
-            "📋 คำสั่งที่ใช้ได้:\n"
-            "🔑 /verify [รหัส] - ยืนยันการลงทะเบียนด้วยรหัสที่ได้จาก Google Form\n"
-            "📝 /register - ขอข้อมูลการลงทะเบียนและลิงก์กรอกแบบฟอร์ม\n"
-            "📊 /status - ดูสถิติการใช้งานและข้อมูลเซสชัน\n"
-            "📈 /progress - ดูรายงานความก้าวหน้าของคุณ\n"
-            "🔄 /optimize - ปรับปรุงประวัติการสนทนาให้มีประสิทธิภาพ\n"
+            "- ให้คำปรึกษาเกี่ยวกับวิธีรับมือความอยากและอาการถอน\n"
+            "- ให้ข้อมูลเกี่ยวกับผลกระทบของสารเสพติดและการรักษา\n"
+            "- ติดตามความก้าวหน้าและให้คำแนะนำที่เหมาะสมกับคุณ\n\n"
+            "🛠️ คำสั่งที่มีให้ใช้:\n"
+            "📥 /register - วิธีลงทะเบียนใช้งาน\n"
+            "✅ /verify <รหัส> - ยืนยันตัวตนด้วยรหัส 6 หลัก\n"
+            "🔄 /reset - เริ่มประวัติการสนทนาใหม่\n"
+            "🧠 /optimize - ปรับปรุงประวัติการสนทนาให้มีประสิทธิภาพ\n"
             "📈 /tokens - ตรวจสอบการใช้งานโทเค็นในเซสชันปัจจุบัน\n"
             "📋 /context - ดูบริบทของคุณจากแบบประเมินที่กรอกไว้\n"
             "🔔 /followup - ตรวจสอบกำหนดการติดตามของคุณ\n"
@@ -1804,7 +1803,7 @@ def handle_command_with_processing(user_id, command):
             "เริ่มพูดคุยกับฉันได้เลยนะคะ ฉันพร้อมรับฟังและช่วยเหลือคุณ 💚"
         )
 
-    elif command == '/status':
+    elif normalized == '/status':
         history_count = db.get_user_history_count(user_id)
         important_count = db.get_important_message_count(user_id)
         last_interaction = db.get_last_interaction(user_id)
@@ -1812,7 +1811,6 @@ def handle_command_with_processing(user_id, command):
         total_db_tokens = db.get_total_tokens(user_id) or 0
         session_tokens = get_session_token_count(user_id)
 
-        # อัพเดทข้อความสถานะพร้อมตัวเลขสำคัญ และชี้แจงความแตกต่าง
         response_text = (
             "📊 สถิติการสนทนาของคุณ\n"
             f"▫️ จำนวนการสนทนาที่บันทึก: {history_count} ครั้ง\n"
@@ -1821,14 +1819,13 @@ def handle_command_with_processing(user_id, command):
             f"▫️ สถานะเซสชันปัจจุบัน: {'🟢 กำลังสนทนาอยู่' if current_session else '🔴 ยังไม่เริ่มสนทนา'}\n\n"
             f"📝 สถิติโทเค็น\n"
             f"▫️ โทเค็นในเซสชันปัจจุบัน: {session_tokens:,}\n"
-            f"  (รวมทุกข้อความในบริบทปัจจุบัน)\n"
             f"▫️ โทเค็นในฐานข้อมูล: {total_db_tokens:,}\n"
-            f"  (ผลรวมของแต่ละข้อความที่บันทึก)\n\n"
+            "  (ผลรวมของแต่ละข้อความที่บันทึก)\n\n"
             "💚 น้องใจดีพร้อมให้คำปรึกษาและสนับสนุนคุณตลอดเส้นทางการเลิกสารเสพติด\n"
             "💬 มีคำถามหรือต้องการความช่วยเหลือ เพียงพิมพ์บอกฉันได้เลยค่ะ"
         )
 
-    elif command == '/emergency':
+    elif normalized == '/emergency':
         response_text = (
             "🚨 บริการช่วยเหลือฉุกเฉิน 🚨\n\n"
             "หากคุณหรือคนใกล้ตัวกำลังประสบปัญหาต่อไปนี้:\n"
@@ -1846,7 +1843,7 @@ def handle_command_with_processing(user_id, command):
             "💚 การขอความช่วยเหลือคือก้าวแรกของการดูแลตัวเอง"
         )
 
-    elif command == '/progress':
+    elif normalized == '/progress':
         report = generate_progress_report(user_id)
         response_text = report if report else (
             "📊 รายงานความก้าวหน้า\n\n"
@@ -1854,7 +1851,7 @@ def handle_command_with_processing(user_id, command):
             "เมื่อเราพูดคุยกันมากขึ้น น้องใจดีจะสามารถติดตามและวิเคราะห์ความก้าวหน้าของคุณได้"
         )
 
-    elif command == '/register':
+    elif normalized == '/register':
         response_text = (
             "📝 การลงทะเบียนใช้งานน้องใจดี\n\n"
             "เพื่อเริ่มใช้งาน คุณจำเป็นต้องลงทะเบียนก่อน โดยทำตามขั้นตอนดังนี้:\n\n"
@@ -1863,11 +1860,9 @@ def handle_command_with_processing(user_id, command):
             "3. นำรหัสมาพิมพ์ที่นี่ด้วยคำสั่ง \"/verify รหัส\" เช่น \"/verify 123456\"\n\n"
             "หากมีปัญหาในการลงทะเบียน คุณสามารถติดต่อเจ้าหน้าที่ได้ที่ support@example.com"
         )
-        
-    elif command == '/context':
-        # คำสั่งใหม่: ดูบริบทจากแบบประเมิน
+
+    elif normalized == '/context':
         context = get_user_context(user_id)
-        
         if context:
             response_text = (
                 "📋 บริบทของคุณจากแบบประเมิน:\n\n"
@@ -1879,15 +1874,22 @@ def handle_command_with_processing(user_id, command):
                 "ไม่พบข้อมูลบริบทจากแบบประเมิน\n"
                 "อาจเป็นเพราะคุณลงทะเบียนก่อนที่ระบบจะมีฟีเจอร์นี้"
             )
-        
-        send_final_response(user_id, response_text)
-        return
+        send_final_response(user_id, response_text, reply_token=reply_token)
+        return True
 
     else:
-        response_text = "คำสั่งไม่ถูกต้อง ลองพิมพ์ /help เพื่อดูคำสั่งทั้งหมด"
+        send_final_response(
+            user_id,
+            "คำสั่งไม่ถูกต้องค่ะ ลองพิมพ์ /help เพื่อดูคำสั่งที่สามารถใช้ได้",
+            reply_token=reply_token,
+        )
+        return True
 
     if response_text:
-        send_final_response(user_id, response_text)
+        send_final_response(user_id, response_text, reply_token=reply_token)
+        return True
+
+    return False
 
 def handle_response_timing(start_time, animation_success):
     """จัดการเวลาในการตอบสนองเพื่อประสบการณ์ผู้ใช้ที่ดีขึ้น"""
@@ -2164,6 +2166,19 @@ def handle_follow(event):
 
 # เริ่มต้นตัวกำหนดการ
 scheduler = BackgroundScheduler()
+
+def shutdown_scheduler(wait=True, reason="unknown"):
+    """�Դ��ǡ�˹���âͧ APScheduler ���ҧ��ʹ���"""
+    if not scheduler.running:
+        logging.debug(f"������ûԴ��ǡ�˹���� ({reason}): �ѧ����������������ش����")
+        return
+    try:
+        scheduler.shutdown(wait=wait)
+        logging.info(f"�Դ��ǡ�˹�������º���� ({reason})")
+    except SchedulerNotRunningError:
+        logging.debug(f"��ǡ�˹���ö١�Դ����� ({reason})")
+    except Exception as exc:
+        logging.error(f"�Դ��ͼԴ��Ҵ㹡�ûԴ��ǡ�˹���� ({reason}): {exc}")
 
 # เพิ่มงานตัวกำหนดการ
 def init_scheduler():

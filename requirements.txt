@@ -8,43 +8,9 @@ flask-limiter>=3.3.1
 mysql-connector-python>=8.1.0
 waitress>=2.1.2
 gunicorn>=21.2.0
-regex>=2023.6.3
 APScheduler>=3.10.1
 requests>=2.31.0
-httpx>=0.24.1
 tiktoken>=0.5.1
-psycopg2-binary>=2.9.9
-gspread>=5.10.0
-oauth2client>=4.1.3
 
 # Testing Dependencies
 pytest>=8.4.1
-pytest-asyncio>=1.1.0
-
-# Analytics and Dashboard Dependencies
-flask-socketio>=5.5.1
-numpy>=2.3.2
-plotly>=6.3.0
-pandas>=2.2.0
-
-# Security and Encryption Dependencies
-cryptography>=45.0.6
-PyJWT>=2.10.1
-
-# Machine Learning and Data Processing Dependencies
-scikit-learn>=1.7.1
-scipy>=1.16.1
-joblib>=1.5.1
-threadpoolctl>=3.6.0
-
-# System Monitoring and Performance Dependencies
-psutil>=7.0.0
-
-# Audio and Voice Processing Dependencies
-pydub>=0.25.1
-SpeechRecognition>=3.14.3
-pyttsx3>=2.90
-
-# Async and Microservices Dependencies
-aioredis>=2.0.1
-async-timeout>=5.0.1
