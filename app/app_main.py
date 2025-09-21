@@ -11,12 +11,13 @@ import time
 import threading
 import re
 from datetime import datetime, timedelta
-from flask import Flask, request, abort, jsonify
+from flask import Flask, request, abort, jsonify, render_template
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, FollowEvent
 import redis
 from random import choice
+from collections import Counter
 import signal
 import atexit
 from waitress import serve
@@ -46,6 +47,7 @@ from .risk_assessment import (
     assess_risk,
     save_progress_data,
     generate_progress_report,
+    RISK_KEYWORDS,
 )
 from .database_init import initialize_database
 from .database_manager import DatabaseManager
@@ -56,7 +58,7 @@ from .error_handling import (
     get_error_handler
 )
 import traceback
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 from enum import Enum
 
 # ค่าคงที่ส่วนของการแอพลิเคชัน
@@ -69,6 +71,8 @@ PROCESSING_MESSAGES = [
     "📝 กำลังเรียบเรียงคำตอบ...",
     "🔄 รอสักครู่นะคะ..."
 ]
+HIGH_RISK_KEYWORDS = {kw.lower() for kw in RISK_KEYWORDS.get('high_risk', [])}
+MEDIUM_RISK_KEYWORDS = {kw.lower() for kw in RISK_KEYWORDS.get('medium_risk', [])}
 
 # Legacy error types for backward compatibility - will be migrated to new system
 class ErrorType(Enum):
@@ -81,7 +85,11 @@ class ErrorType(Enum):
     UNKNOWN_ERROR = "unknown_error"
 
 # สร้างอินสแตนซ์แอป Flask
-app = Flask(__name__)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
+STATIC_DIR = os.path.join(BASE_DIR, 'static')
+
+app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 
 # ตั้งค่าการบันทึกข้อมูลและหมุนไฟล์เมื่อขนาดเกิน 5MB
 os.makedirs('logs', exist_ok=True)
@@ -178,8 +186,217 @@ except Exception as e:
     logging.critical(f"เกิดข้อผิดพลาดในการเริ่มต้นแอปพลิเคชัน: {str(e)}")
     raise
 
-# เริ่มต้น rate limiter
+# เน€เธฃเธดเนเธกเธ•เนเธ rate limiter
 limiter = init_limiter(app)
+
+@limiter.exempt
+@app.route('/dashboard', methods=['GET'])
+def dashboard_page():
+    return render_template('dashboard.html')
+
+
+
+
+
+
+def _parse_progress_timestamp(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            if value.endswith('Z'):
+                try:
+                    return datetime.fromisoformat(value.replace('Z', '+00:00'))
+                except ValueError:
+                    return None
+    return None
+
+
+def _classify_keyword_risk(keyword: str) -> str:
+    key_lower = keyword.lower()
+    if key_lower in HIGH_RISK_KEYWORDS:
+        return 'high'
+    if key_lower in MEDIUM_RISK_KEYWORDS:
+        return 'medium'
+    return 'contextual'
+
+
+def _collect_dashboard_progress_metrics(
+    lookback_days: int = 30,
+    per_user_limit: int = 5,
+    keyword_limit: int = 10,
+) -> Dict[str, Any]:
+    keyword_counter: Counter[str] = Counter()
+    display_lookup: Dict[str, str] = {}
+    risk_counter: Counter[str] = Counter()
+    user_progress: Dict[str, List[Dict[str, Any]]] = {}
+    if redis_client is None:
+        return {
+            'top_keywords': [],
+            'risk_summary': {'high': 0, 'medium': 0, 'low': 0, 'unknown': 0},
+            'user_progress': {},
+        }
+
+    cutoff = datetime.now() - timedelta(days=max(1, lookback_days))
+    try:
+        for key in redis_client.scan_iter('progress:*'):
+            user_id = key.split(':', 1)[1] if ':' in key else key
+            entries = redis_client.lrange(key, 0, -1)
+            recent_events: List[Dict[str, Any]] = []
+            for idx, raw in enumerate(entries):
+                try:
+                    entry = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+
+                timestamp = _parse_progress_timestamp(entry.get('timestamp'))
+                risk_level = (entry.get('risk_level') or 'unknown').lower()
+                keywords = entry.get('keywords') or []
+                risk_counter[risk_level] += 1
+
+                if idx < max(1, per_user_limit):
+                    recent_events.append({
+                        'timestamp': timestamp.isoformat() if timestamp else None,
+                        'risk_level': risk_level,
+                        'keywords': keywords,
+                    })
+
+                if timestamp and timestamp >= cutoff:
+                    for keyword in keywords:
+                        normalized = keyword.strip()
+                        if not normalized:
+                            continue
+                        lowered = normalized.lower()
+                        keyword_counter[lowered] += 1
+                        display_lookup.setdefault(lowered, normalized)
+
+            if recent_events:
+                user_progress[user_id] = recent_events
+    except Exception as exc:
+        logging.warning('Failed to collect progress metrics: %s', exc)
+
+    top_keywords: List[Dict[str, Any]] = []
+    for lowered, count in keyword_counter.most_common(max(1, keyword_limit)):
+        label = display_lookup.get(lowered, lowered)
+        top_keywords.append({
+            'keyword': label,
+            'count': int(count),
+            'risk_level': _classify_keyword_risk(lowered),
+        })
+
+    risk_summary = {
+        'high': int(risk_counter.get('high', 0)),
+        'medium': int(risk_counter.get('medium', 0)),
+        'low': int(risk_counter.get('low', 0)),
+    }
+    unknown_total = sum(
+        count for level, count in risk_counter.items()
+        if level not in risk_summary
+    )
+    risk_summary['unknown'] = int(unknown_total)
+
+    return {
+        'top_keywords': top_keywords,
+        'risk_summary': risk_summary,
+        'user_progress': user_progress,
+    }
+
+
+@limiter.limit('20 per minute')
+@app.route('/api/dashboard/insights', methods=['GET'])
+def get_dashboard_insights():
+    """Summarise conversation and risk insights for care teams."""
+    try:
+        user_limit = request.args.get('limit', default=10, type=int) or 10
+        lookback_days = request.args.get('lookback_days', default=30, type=int) or 30
+        keyword_limit = request.args.get('keyword_limit', default=10, type=int) or 10
+
+        user_limit = max(1, min(user_limit, 100))
+        lookback_days = max(1, min(lookback_days, 180))
+        keyword_limit = max(1, min(keyword_limit, 50))
+
+        progress_metrics = _collect_dashboard_progress_metrics(
+            lookback_days=lookback_days,
+            per_user_limit=5,
+            keyword_limit=keyword_limit,
+        )
+
+        overview_raw = db.get_dashboard_overview() or {}
+        overview = {
+            'total_conversations': int(overview_raw.get('total_conversations', 0) or 0),
+            'unique_users': int(overview_raw.get('unique_users', 0) or 0),
+            'important_messages': int(overview_raw.get('important_messages', 0) or 0),
+        }
+
+        try:
+            followup_result = db_manager.execute_query(
+                'SELECT COUNT(*) FROM follow_ups WHERE status != %s',
+                ('completed',),
+            )
+            active_followups = int(followup_result[0][0]) if followup_result else 0
+        except Exception as exc:
+            logging.warning('Could not fetch follow-up metrics: %s', exc)
+            active_followups = 0
+        overview['active_follow_ups'] = active_followups
+
+        user_summaries = db.get_recent_user_summaries(limit=user_limit) or []
+        user_progress_map = progress_metrics.get('user_progress', {})
+        formatted_users: List[Dict[str, Any]] = []
+
+        for summary in user_summaries:
+            formatted = dict(summary)
+            parsed = _parse_progress_timestamp(formatted.get('last_interaction'))
+            if parsed:
+                formatted['last_interaction'] = parsed.isoformat()
+
+            total_messages = int(formatted.get('total_messages') or 0)
+            important_messages = int(formatted.get('important_messages') or 0)
+            total_tokens = int(formatted.get('total_tokens') or 0)
+
+            formatted['total_messages'] = total_messages
+            formatted['important_messages'] = important_messages
+            formatted['total_tokens'] = total_tokens
+            formatted['important_ratio'] = (
+                round(important_messages / total_messages, 3)
+                if total_messages else 0.0
+            )
+            formatted['recent_risk_events'] = user_progress_map.get(
+                formatted.get('user_id'), []
+            )
+
+            formatted_users.append(formatted)
+
+        risk_summary = progress_metrics.get('risk_summary', {
+            'high': 0,
+            'medium': 0,
+            'low': 0,
+            'unknown': 0,
+        })
+
+        response_payload = {
+            'generated_at': datetime.now().isoformat(),
+            'parameters': {
+                'user_limit': user_limit,
+                'lookback_days': lookback_days,
+                'keyword_limit': keyword_limit,
+            },
+            'overview': overview,
+            'risk_summary': risk_summary,
+            'top_keywords': progress_metrics.get('top_keywords', []),
+            'users': formatted_users,
+        }
+        return jsonify(response_payload)
+
+    except Exception as exc:
+        logging.error('Error generating dashboard insights: %s', exc, exc_info=True)
+        return jsonify({
+            'error': 'dashboard_generation_failed',
+            'message': 'Dashboard insights are unavailable at the moment.',
+        }), 500
 
 # Health check endpoint
 @app.route('/health', methods=['GET'])
@@ -2168,17 +2385,17 @@ def handle_follow(event):
 scheduler = BackgroundScheduler()
 
 def shutdown_scheduler(wait=True, reason="unknown"):
-    """�Դ��ǡ�˹���âͧ APScheduler ���ҧ��ʹ���"""
+    """�Դ��ǡ�˹���âͧ APScheduler ���ҧ��ʹ���"""
     if not scheduler.running:
-        logging.debug(f"������ûԴ��ǡ�˹���� ({reason}): �ѧ����������������ش����")
+        logging.debug(f"������ûԴ��ǡ�˹���� ({reason}): �ѧ����������������ش����")
         return
     try:
         scheduler.shutdown(wait=wait)
-        logging.info(f"�Դ��ǡ�˹�������º���� ({reason})")
+        logging.info(f"�Դ��ǡ�˹�������º���� ({reason})")
     except SchedulerNotRunningError:
-        logging.debug(f"��ǡ�˹���ö١�Դ����� ({reason})")
+        logging.debug(f"��ǡ�˹���ö١�Դ����� ({reason})")
     except Exception as exc:
-        logging.error(f"�Դ��ͼԴ��Ҵ㹡�ûԴ��ǡ�˹���� ({reason}): {exc}")
+        logging.error(f"�Դ��ͼԴ��Ҵ㹡�ûԴ��ǡ�˹���� ({reason}): {exc}")
 
 # เพิ่มงานตัวกำหนดการ
 def init_scheduler():

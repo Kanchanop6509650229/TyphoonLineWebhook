@@ -331,3 +331,84 @@ class ChatHistoryDB:
         except Exception as e:
             logging.error(f"Error updating follow-up status: {str(e)}")
             raise
+
+    @safe_db_operation
+    def get_dashboard_overview(self) -> Dict[str, int]:
+        """Collect global conversation metrics for the practitioner dashboard."""
+        query = (
+            """
+            SELECT
+                COUNT(*) AS total_conversations,
+                COUNT(DISTINCT user_id) AS unique_users,
+                COALESCE(SUM(CASE WHEN important_flag THEN 1 ELSE 0 END), 0) AS important_messages
+            FROM conversations
+            """
+        )
+
+        try:
+            result = self.db.execute_query(query, dictionary=True)
+        except TypeError:
+            result = self.db.execute_query(query)
+            if result:
+                total_conversations, unique_users, important_messages = result[0]
+            else:
+                total_conversations = unique_users = important_messages = 0
+            return {
+                'total_conversations': int(total_conversations or 0),
+                'unique_users': int(unique_users or 0),
+                'important_messages': int(important_messages or 0),
+            }
+
+        row = (result or [{}])[0] if isinstance(result, list) else {}
+        return {
+            'total_conversations': int((row or {}).get('total_conversations', 0) or 0),
+            'unique_users': int((row or {}).get('unique_users', 0) or 0),
+            'important_messages': int((row or {}).get('important_messages', 0) or 0),
+        }
+
+    @safe_db_operation
+    def get_recent_user_summaries(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Return per-user conversation snapshots ordered by recency."""
+        query = (
+            """
+            SELECT
+                user_id,
+                COUNT(*) AS total_messages,
+                SUM(CASE WHEN important_flag THEN 1 ELSE 0 END) AS important_messages,
+                MAX(timestamp) AS last_interaction,
+                COALESCE(SUM(token_count), 0) AS total_tokens
+            FROM conversations
+            GROUP BY user_id
+            ORDER BY last_interaction DESC
+            LIMIT %s
+            """
+        )
+
+        try:
+            rows = self.db.execute_query(query, (limit,), dictionary=True)
+        except TypeError:
+            rows = self.db.execute_query(query.replace('%s', str(limit)))
+
+        summaries: List[Dict[str, Any]] = []
+        for row in rows or []:
+            if isinstance(row, dict):
+                data = row
+            else:
+                user_id, total_messages, important_messages, last_interaction, total_tokens = row
+                data = {
+                    'user_id': user_id,
+                    'total_messages': total_messages,
+                    'important_messages': important_messages,
+                    'last_interaction': last_interaction,
+                    'total_tokens': total_tokens,
+                }
+
+            summaries.append({
+                'user_id': data.get('user_id'),
+                'total_messages': int(data.get('total_messages') or 0),
+                'important_messages': int(data.get('important_messages') or 0),
+                'last_interaction': data.get('last_interaction'),
+                'total_tokens': int(data.get('total_tokens') or 0),
+            })
+
+        return summaries
