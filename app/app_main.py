@@ -246,8 +246,9 @@ def _collect_dashboard_progress_metrics(
         for key in redis_client.scan_iter('progress:*'):
             user_id = key.split(':', 1)[1] if ':' in key else key
             entries = redis_client.lrange(key, 0, -1)
+            limit_per_user = max(1, per_user_limit)
             recent_events: List[Dict[str, Any]] = []
-            for idx, raw in enumerate(entries):
+            for raw in entries:
                 try:
                     entry = json.loads(raw)
                 except (TypeError, json.JSONDecodeError):
@@ -258,7 +259,7 @@ def _collect_dashboard_progress_metrics(
                 keywords = entry.get('keywords') or []
                 risk_counter[risk_level] += 1
 
-                if idx < max(1, per_user_limit):
+                if risk_level != 'low' and len(recent_events) < limit_per_user:
                     recent_events.append({
                         'timestamp': timestamp.isoformat() if timestamp else None,
                         'risk_level': risk_level,
@@ -370,6 +371,61 @@ def get_dashboard_insights():
 
             formatted_users.append(formatted)
 
+        total_users = len(formatted_users)
+        total_messages_all = sum(user['total_messages'] for user in formatted_users)
+        important_messages_all = sum(user['important_messages'] for user in formatted_users)
+        total_tokens_all = sum(user['total_tokens'] for user in formatted_users)
+        high_focus_users = sum(
+            1 for user in formatted_users
+            if user.get('important_ratio', 0) >= 0.4
+        )
+        growth_watch_users = sum(
+            1 for user in formatted_users
+            if 0.15 <= user.get('important_ratio', 0) < 0.4
+        )
+        monitor_users = max(total_users - high_focus_users - growth_watch_users, 0)
+        returning_users = sum(1 for user in formatted_users if user['total_messages'] >= 10)
+        deep_conversation_users = sum(
+            1 for user in formatted_users
+            if user['total_tokens'] >= 2000
+        )
+        avg_messages_per_user = (
+            round(total_messages_all / total_users, 1)
+            if total_users
+            else 0.0
+        )
+        avg_tokens_per_message = (
+            round(total_tokens_all / total_messages_all, 2)
+            if total_messages_all
+            else 0.0
+        )
+        important_share = (
+            round(important_messages_all / total_messages_all, 3)
+            if total_messages_all
+            else 0.0
+        )
+
+        trend_window = min(max(lookback_days, 7), 30)
+        daily_totals = db.get_recent_daily_message_totals(days=trend_window) or []
+
+        infographic = {
+            'engagement': {
+                'active_users': total_users,
+                'returning_users': returning_users,
+                'avg_messages_per_user': avg_messages_per_user,
+                'high_focus_users': high_focus_users,
+                'growth_watch_users': growth_watch_users,
+                'monitor_users': monitor_users,
+            },
+            'quality': {
+                'important_message_share': important_share,
+                'avg_tokens_per_message': avg_tokens_per_message,
+                'deep_conversation_users': deep_conversation_users,
+                'active_follow_ups': overview.get('active_follow_ups', 0),
+            },
+            'message_trend': daily_totals,
+        }
+
         risk_summary = progress_metrics.get('risk_summary', {
             'high': 0,
             'medium': 0,
@@ -387,6 +443,7 @@ def get_dashboard_insights():
             'overview': overview,
             'risk_summary': risk_summary,
             'top_keywords': progress_metrics.get('top_keywords', []),
+            'infographic': infographic,
             'users': formatted_users,
         }
         return jsonify(response_payload)
@@ -397,6 +454,63 @@ def get_dashboard_insights():
             'error': 'dashboard_generation_failed',
             'message': 'Dashboard insights are unavailable at the moment.',
         }), 500
+
+@limiter.limit('30 per minute')
+@app.route('/api/dashboard/users/<user_id>/history', methods=['GET'])
+def get_dashboard_user_history(user_id: str):
+    """Return conversation transcript and risk highlights for a dashboard drill-down."""
+    if not user_id:
+        return jsonify({'error': 'missing_user_id'}), 400
+
+    limit = request.args.get('limit', default=50, type=int) or 50
+    limit = max(10, min(limit, 200))
+
+    try:
+        history = db.get_user_conversation_feed(user_id, limit=limit) or []
+        summary = db.get_user_snapshot(user_id) or {
+            'user_id': user_id,
+            'total_messages': 0,
+            'important_messages': 0,
+            'total_tokens': 0,
+            'important_ratio': 0.0,
+            'last_interaction': None,
+            'first_interaction': None,
+        }
+        if summary.get('user_id') is None:
+            summary['user_id'] = user_id
+
+        risk_events: List[Dict[str, Any]] = []
+        if redis_client is not None:
+            raw_events = redis_client.lrange(f"progress:{user_id}", 0, limit - 1)
+            for raw in raw_events:
+                try:
+                    event = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+
+                timestamp = _parse_progress_timestamp(event.get('timestamp'))
+                risk_events.append({
+                    'timestamp': timestamp.isoformat() if timestamp else event.get('timestamp'),
+                    'risk_level': (event.get('risk_level') or 'unknown').lower(),
+                    'keywords': event.get('keywords') or [],
+                })
+
+        response_payload = {
+            'generated_at': datetime.now().isoformat(),
+            'user_id': user_id,
+            'summary': summary,
+            'history': history,
+            'risk_events': risk_events,
+            'limit': limit,
+        }
+        return jsonify(response_payload)
+    except Exception as exc:
+        logging.error('Error retrieving dashboard user history for %s: %s', user_id, exc, exc_info=True)
+        return jsonify({
+            'error': 'user_history_unavailable',
+            'message': 'ไม่สามารถดึงประวัติการสนทนาได้ในขณะนี้',
+        }), 500
+
 
 # Health check endpoint
 @app.route('/health', methods=['GET'])

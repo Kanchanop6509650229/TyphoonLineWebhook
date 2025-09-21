@@ -297,6 +297,341 @@
                 order: 3;
             }
         }
+        .insights-grid {
+            display: grid;
+            gap: 1.5rem;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        }
+
+        .infographic-card {
+            background: var(--surface);
+            border-radius: 16px;
+            padding: 1.5rem;
+            box-shadow: 0 18px 32px -28px rgba(15, 23, 42, 0.45);
+            border: 1px solid rgba(79, 70, 229, 0.08);
+            position: relative;
+            display: grid;
+            gap: 0.75rem;
+        }
+
+        .infographic-card h3 {
+            margin: 0;
+            font-size: 1.1rem;
+        }
+
+        .infographic-card p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+
+        .infographic-metrics {
+            display: grid;
+            gap: 0.75rem;
+        }
+
+        .infographic-metric {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            background: rgba(79, 70, 229, 0.05);
+            padding: 0.65rem 0.85rem;
+            border-radius: 12px;
+        }
+
+        .infographic-metric .label {
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+
+        .infographic-metric .value {
+            font-weight: 600;
+            font-size: 1.05rem;
+        }
+
+        .infographic-footnote {
+            font-size: 0.8rem;
+            color: var(--muted);
+        }
+
+        .trend-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+
+        .trend-chart {
+            display: grid;
+            grid-auto-flow: column;
+            align-items: end;
+            gap: 0.5rem;
+            min-height: 140px;
+            margin-top: 1rem;
+        }
+
+        .trend-bar {
+            position: relative;
+            width: 16px;
+            border-radius: 999px 999px 0 0;
+            background: var(--accent);
+            opacity: 0.85;
+        }
+
+        .trend-bar::after {
+            content: attr(data-count);
+            position: absolute;
+            top: -1.5rem;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 0.75rem;
+            color: var(--muted);
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            white-space: nowrap;
+        }
+
+        .trend-bar:hover::after,
+        .trend-bar:focus-visible::after {
+            opacity: 1;
+        }
+
+        .trend-axis {
+            display: grid;
+            grid-auto-flow: column;
+            gap: 0.5rem;
+            font-size: 0.75rem;
+            color: var(--muted);
+            margin-top: 0.6rem;
+        }
+
+        .trend-axis span {
+            text-align: center;
+        }
+
+        .trend-empty {
+            font-size: 0.85rem;
+            color: var(--muted);
+            margin-top: 1rem;
+        }
+
+        .history-button {
+            background: transparent;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            padding: 0.45rem 0.85rem;
+            border-radius: 999px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: background 0.2s ease, color 0.2s ease;
+        }
+
+        .history-button:hover {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .history-button:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        body.modal-open {
+            overflow: hidden;
+        }
+
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.6);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem 1.5rem;
+            z-index: 4000;
+        }
+
+        .modal-backdrop.active {
+            display: flex;
+        }
+
+        .modal-content {
+            width: min(960px, 96vw);
+            max-height: 90vh;
+            background: var(--surface);
+            border-radius: 18px;
+            box-shadow: 0 32px 64px -32px rgba(15, 23, 42, 0.55);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .modal-header {
+            padding: 1.5rem 1.75rem 1rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.35rem;
+        }
+
+        .modal-subtitle {
+            margin: 0.35rem 0 0;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        .modal-close {
+            background: rgba(79, 70, 229, 0.08);
+            border: none;
+            border-radius: 999px;
+            width: 36px;
+            height: 36px;
+            font-size: 1.2rem;
+            line-height: 1;
+            color: var(--accent);
+            cursor: pointer;
+        }
+
+        .modal-close:hover {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .modal-body {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            gap: 1.5rem;
+            padding: 1.5rem 1.75rem;
+            overflow: auto;
+        }
+
+        .history-sidebar {
+            background: rgba(79, 70, 229, 0.05);
+            border-radius: 14px;
+            padding: 1.2rem;
+            display: grid;
+            gap: 1rem;
+            align-content: start;
+        }
+
+        .history-sidebar h3 {
+            margin: 0;
+            font-size: 1.05rem;
+        }
+
+        .history-stats {
+            display: grid;
+            gap: 0.75rem;
+        }
+
+        .history-stats div {
+            display: grid;
+            gap: 0.25rem;
+        }
+
+        .history-stats dt {
+            font-size: 0.8rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05rem;
+        }
+
+        .history-stats dd {
+            margin: 0;
+            font-weight: 600;
+            font-size: 1.05rem;
+        }
+
+        .history-risk {
+            display: grid;
+            gap: 0.6rem;
+        }
+
+        .history-risk-list {
+            display: grid;
+            gap: 0.5rem;
+        }
+
+        .history-risk-item {
+            background: #fff;
+            border-radius: 12px;
+            padding: 0.6rem 0.75rem;
+            border: 1px solid rgba(79, 70, 229, 0.08);
+            display: grid;
+            gap: 0.25rem;
+        }
+
+        .history-risk-item .meta {
+            font-size: 0.8rem;
+            color: var(--muted);
+        }
+
+        .history-timeline {
+            display: grid;
+            gap: 1rem;
+            align-content: start;
+        }
+
+        #history-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: grid;
+            gap: 1rem;
+        }
+
+        .conversation-entry {
+            border: 1px solid rgba(79, 70, 229, 0.1);
+            border-radius: 14px;
+            padding: 1rem 1.1rem;
+            background: #fff;
+            display: grid;
+            gap: 0.75rem;
+        }
+
+        .conversation-entry .entry-meta {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.75rem;
+            align-items: baseline;
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+
+        .conversation-entry .entry-text {
+            display: grid;
+            gap: 0.35rem;
+        }
+
+        .conversation-entry .speaker {
+            font-weight: 600;
+            color: var(--accent);
+            margin-right: 0.35rem;
+        }
+
+        .conversation-entry.important {
+            border-color: rgba(220, 38, 38, 0.3);
+            box-shadow: 0 18px 32px -30px rgba(220, 38, 38, 0.45);
+        }
+
+        .modal-empty {
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+
+        @media (max-width: 960px) {
+            .modal-body {
+                grid-template-columns: 1fr;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -353,6 +688,73 @@
             </article>
         </section>
 
+        <section class="insights-grid" id="infographic-section" hidden aria-live="polite">
+            <article class="infographic-card" id="engagement-card">
+                <div>
+                    <h3>ภาพรวมการมีส่วนร่วม</h3>
+                    <p>ติดตามสถานะการสนทนาของผู้ใช้กับน้องใจดี</p>
+                </div>
+                <div class="infographic-metrics">
+                    <div class="infographic-metric">
+                        <span class="label">ผู้ใช้ที่ติดต่อ</span>
+                        <span class="value" id="engagement-active-users">--</span>
+                    </div>
+                    <div class="infographic-metric">
+                        <span class="label">กลับมาพูดคุยซ้ำ</span>
+                        <span class="value" id="engagement-returning-users">--</span>
+                    </div>
+                    <div class="infographic-metric">
+                        <span class="label">เฉลี่ยข้อความ/คน</span>
+                        <span class="value" id="engagement-avg-messages">--</span>
+                    </div>
+                    <div class="infographic-metric">
+                        <span class="label">ต้องติดตามพิเศษ</span>
+                        <span class="value" id="engagement-high-focus">--</span>
+                    </div>
+                </div>
+                <p class="infographic-footnote">กลุ่มต้องส่งเสริม: <span id="engagement-growth-users">--</span> ราย · ติดตามใกล้ชิด: <span id="engagement-monitor-users">--</span> ราย</p>
+            </article>
+
+            <article class="infographic-card" id="quality-card">
+                <div>
+                    <h3>คุณภาพการสนทนา</h3>
+                    <p>ดูแนวโน้มเนื้อหาที่ต้องดูแลและการใช้ทรัพยากร</p>
+                </div>
+                <div class="infographic-metrics">
+                    <div class="infographic-metric">
+                        <span class="label">สัดส่วนข้อความสำคัญ</span>
+                        <span class="value" id="quality-important-share">--</span>
+                    </div>
+                    <div class="infographic-metric">
+                        <span class="label">โทเค็นเฉลี่ย/ข้อความ</span>
+                        <span class="value" id="quality-avg-tokens">--</span>
+                    </div>
+                    <div class="infographic-metric">
+                        <span class="label">การสนทนาลึก</span>
+                        <span class="value" id="quality-deep-conversations">--</span>
+                    </div>
+                    <div class="infographic-metric">
+                        <span class="label">ติดตามต่อ</span>
+                        <span class="value" id="quality-active-followups">--</span>
+                    </div>
+                </div>
+            </article>
+
+            <article class="infographic-card" id="trend-card">
+                <div>
+                    <h3>แนวโน้มข้อความล่าสุด</h3>
+                    <div class="trend-meta">
+                        <span>ช่วงข้อมูล: <strong id="trend-range">--</strong></span>
+                        <span>รวมทั้งหมด: <strong id="trend-total-messages">--</strong></span>
+                        <span>ข้อความสำคัญ: <strong id="trend-important-share">--</strong></span>
+                    </div>
+                </div>
+                <div id="trend-empty" class="trend-empty">ยังไม่มีข้อมูลแนวโน้มเพียงพอ</div>
+                <div class="trend-chart" id="trend-chart" aria-hidden="true"></div>
+                <div class="trend-axis" id="trend-axis" aria-hidden="true"></div>
+            </article>
+        </section>
+
         <section class="card" aria-live="polite">
             <h2>ภาพรวมระดับความเสี่ยง</h2>
             <div id="risk-summary" class="risk-list" role="list">
@@ -391,6 +793,7 @@
                             <th>โทเค็นรวม</th>
                             <th>ปฏิสัมพันธ์ล่าสุด</th>
                             <th>เหตุการณ์เสี่ยงล่าสุด</th>
+                            <th>ประวัติแชท</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -398,6 +801,58 @@
             </div>
         </section>
     </main>
+
+    <div class="modal-backdrop" id="history-modal" aria-hidden="true">
+        <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="history-title">
+            <header class="modal-header">
+                <div>
+                    <h2 id="history-title">ประวัติการสนทนา</h2>
+                    <p class="modal-subtitle" id="history-summary">เลือกผู้ใช้เพื่อดูรายละเอียด</p>
+                </div>
+                <button id="history-close" type="button" class="modal-close" aria-label="ปิดหน้าต่าง">&times;</button>
+            </header>
+            <div class="modal-body">
+                <aside class="history-sidebar">
+                    <h3>สรุปผู้ใช้</h3>
+                    <dl class="history-stats">
+                        <div>
+                            <dt>รหัสผู้ใช้</dt>
+                            <dd id="history-user-id">-</dd>
+                        </div>
+                        <div>
+                            <dt>จำนวนข้อความ</dt>
+                            <dd id="history-total-messages">--</dd>
+                        </div>
+                        <div>
+                            <dt>ข้อความสำคัญ</dt>
+                            <dd id="history-important-messages">--</dd>
+                        </div>
+                        <div>
+                            <dt>โทเค็นทั้งหมด</dt>
+                            <dd id="history-total-tokens">--</dd>
+                        </div>
+                        <div>
+                            <dt>อัตราข้อความสำคัญ</dt>
+                            <dd id="history-important-ratio">--</dd>
+                        </div>
+                        <div>
+                            <dt>ล่าสุด</dt>
+                            <dd id="history-last-interaction">--</dd>
+                        </div>
+                    </dl>
+                    <div class="history-risk">
+                        <h3>เหตุการณ์เสี่ยง</h3>
+                        <div id="history-risk-empty" class="modal-empty">ยังไม่มีข้อมูล</div>
+                        <div class="history-risk-list" id="history-risks"></div>
+                    </div>
+                </aside>
+                <section class="history-timeline">
+                    <div id="history-empty" class="modal-empty">เลือกผู้ใช้เพื่อดูบทสนทนา</div>
+                    <ul id="history-list"></ul>
+                </section>
+            </div>
+        </div>
+    </div>
 
     <script>
         const filtersForm = document.getElementById('filters-form');
@@ -418,6 +873,48 @@
         const keywordsEmpty = document.getElementById('keywords-empty');
         const usersTable = document.getElementById('users-table');
         const usersEmpty = document.getElementById('users-empty');
+
+        const infographicSection = document.getElementById('infographic-section');
+        const engagementTargets = {
+            activeUsers: document.getElementById('engagement-active-users'),
+            returningUsers: document.getElementById('engagement-returning-users'),
+            avgMessages: document.getElementById('engagement-avg-messages'),
+            highFocus: document.getElementById('engagement-high-focus'),
+            growthUsers: document.getElementById('engagement-growth-users'),
+            monitorUsers: document.getElementById('engagement-monitor-users'),
+        };
+        const qualityTargets = {
+            importantShare: document.getElementById('quality-important-share'),
+            avgTokens: document.getElementById('quality-avg-tokens'),
+            deepConversations: document.getElementById('quality-deep-conversations'),
+            activeFollowups: document.getElementById('quality-active-followups'),
+        };
+        const trendTargets = {
+            range: document.getElementById('trend-range'),
+            totalMessages: document.getElementById('trend-total-messages'),
+            importantShare: document.getElementById('trend-important-share'),
+            chart: document.getElementById('trend-chart'),
+            axis: document.getElementById('trend-axis'),
+            empty: document.getElementById('trend-empty'),
+        };
+
+        const historyModal = document.getElementById('history-modal');
+        const historyClose = document.getElementById('history-close');
+        const historyTitle = document.getElementById('history-title');
+        const historySummary = document.getElementById('history-summary');
+        const historyUserId = document.getElementById('history-user-id');
+        const historyTotalMessages = document.getElementById('history-total-messages');
+        const historyImportantMessages = document.getElementById('history-important-messages');
+        const historyTotalTokens = document.getElementById('history-total-tokens');
+        const historyImportantRatio = document.getElementById('history-important-ratio');
+        const historyLastInteraction = document.getElementById('history-last-interaction');
+        const historyEmpty = document.getElementById('history-empty');
+        const historyList = document.getElementById('history-list');
+        const historyRiskEmpty = document.getElementById('history-risk-empty');
+        const historyRisks = document.getElementById('history-risks');
+
+        let historyLoading = false;
+        let activeHistoryUser = null;
 
         const riskLabels = {
             high: 'สูง',
@@ -450,6 +947,36 @@
             return (value * 100).toFixed(1) + '%';
         }
 
+        function formatDecimal(value, digits = 1) {
+            if (!Number.isFinite(value)) {
+                return '--';
+            }
+            return value.toLocaleString('th-TH', {
+                minimumFractionDigits: digits,
+                maximumFractionDigits: digits
+            });
+        }
+
+        function formatDateRange(start, end) {
+            if (!start && !end) {
+                return '-';
+            }
+            const formatter = new Intl.DateTimeFormat('th-TH', { day: 'numeric', month: 'short' });
+            const toLabel = (value) => {
+                if (!value) {
+                    return '-';
+                }
+                const date = new Date(value);
+                if (Number.isNaN(date.getTime())) {
+                    return value;
+                }
+                return formatter.format(date);
+            };
+            const startLabel = toLabel(start);
+            const endLabel = toLabel(end);
+            return startLabel === endLabel ? startLabel : `${startLabel} – ${endLabel}`;
+        }
+
         function formatTimestamp(value) {
             if (!value) {
                 return '-';
@@ -468,6 +995,15 @@
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#39;');
+        }
+
+        function clearElement(element) {
+            if (!element) {
+                return;
+            }
+            while (element.firstChild) {
+                element.removeChild(element.firstChild);
+            }
         }
 
         function updateSummary(overview) {
@@ -505,6 +1041,106 @@
                 `;
 
                 riskSummaryContainer.appendChild(row);
+            });
+        }
+
+        function updateInfographic(data) {
+            if (!data || typeof data !== 'object') {
+                infographicSection.hidden = true;
+                return;
+            }
+
+            infographicSection.hidden = false;
+
+            const engagement = data.engagement || {};
+            engagementTargets.activeUsers.textContent = formatNumber(engagement.active_users);
+            engagementTargets.returningUsers.textContent = formatNumber(engagement.returning_users);
+            engagementTargets.avgMessages.textContent = formatDecimal(engagement.avg_messages_per_user ?? 0, 1);
+            engagementTargets.highFocus.textContent = formatNumber(engagement.high_focus_users);
+            engagementTargets.growthUsers.textContent = formatNumber(engagement.growth_watch_users);
+            engagementTargets.monitorUsers.textContent = formatNumber(engagement.monitor_users);
+
+            const quality = data.quality || {};
+            qualityTargets.importantShare.textContent = formatPercent(quality.important_message_share);
+            qualityTargets.avgTokens.textContent = formatDecimal(quality.avg_tokens_per_message ?? 0, 2);
+            qualityTargets.deepConversations.textContent = formatNumber(quality.deep_conversation_users);
+            qualityTargets.activeFollowups.textContent = formatNumber(quality.active_follow_ups);
+
+            renderTrend(Array.isArray(data.message_trend) ? data.message_trend : []);
+        }
+
+        function renderTrend(entries) {
+            clearElement(trendTargets.chart);
+            clearElement(trendTargets.axis);
+
+            const hasEntries = Array.isArray(entries) && entries.length > 0;
+            trendTargets.chart.setAttribute('aria-hidden', hasEntries ? 'false' : 'true');
+            trendTargets.axis.setAttribute('aria-hidden', hasEntries ? 'false' : 'true');
+
+            if (!hasEntries) {
+                trendTargets.empty.hidden = false;
+                trendTargets.range.textContent = '-';
+                trendTargets.totalMessages.textContent = '--';
+                trendTargets.importantShare.textContent = '--';
+                return;
+            }
+
+            trendTargets.empty.hidden = true;
+
+            const totals = entries.reduce((acc, entry) => {
+                const total = Number(entry.total_messages) || 0;
+                const important = Number(entry.important_messages) || 0;
+                acc.total += total;
+                acc.important += important;
+                return acc;
+            }, { total: 0, important: 0 });
+
+            trendTargets.totalMessages.textContent = formatNumber(totals.total);
+            trendTargets.importantShare.textContent = formatPercent(
+                totals.total ? totals.important / totals.total : 0
+            );
+
+            const firstDate = entries[0]?.date;
+            const lastDate = entries[entries.length - 1]?.date || firstDate;
+            trendTargets.range.textContent = formatDateRange(firstDate, lastDate);
+
+            const maxTotal = entries.reduce((max, entry) => {
+                const total = Number(entry.total_messages) || 0;
+                return total > max ? total : max;
+            }, 0) || 1;
+
+            const axisFormatter = new Intl.DateTimeFormat('th-TH', { day: 'numeric' });
+            const ariaFormatter = new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium' });
+
+            entries.forEach(entry => {
+                const total = Number(entry.total_messages) || 0;
+                const important = Number(entry.important_messages) || 0;
+                const ratio = Math.max(6, (total / maxTotal) * 100);
+
+                const bar = document.createElement('div');
+                bar.className = 'trend-bar';
+                bar.style.height = `${ratio}%`;
+                bar.dataset.count = formatNumber(total);
+                bar.tabIndex = 0;
+
+                const dateObj = entry.date ? new Date(entry.date) : null;
+                const axisLabel = dateObj && !Number.isNaN(dateObj.getTime())
+                    ? axisFormatter.format(dateObj)
+                    : (entry.date || '-');
+                const ariaLabel = dateObj && !Number.isNaN(dateObj.getTime())
+                    ? ariaFormatter.format(dateObj)
+                    : (entry.date || 'ไม่ทราบวัน');
+
+                bar.setAttribute(
+                    'aria-label',
+                    `${ariaLabel}: ทั้งหมด ${formatNumber(total)} ข้อความ มีความสำคัญ ${formatNumber(important)}`
+                );
+
+                trendTargets.chart.appendChild(bar);
+
+                const axisSpan = document.createElement('span');
+                axisSpan.textContent = axisLabel;
+                trendTargets.axis.appendChild(axisSpan);
             });
         }
 
@@ -571,13 +1207,170 @@
                     <td>${formatNumber(user.total_tokens)}</td>
                     <td>${formatTimestamp(user.last_interaction)}</td>
                     <td>${eventsHtml}</td>
+                    <td><button type="button" class="history-button" data-user-id="${escapeHtml(user.user_id)}">ดู</button></td>
                 `;
+
+                const historyButton = row.querySelector('.history-button');
+                if (historyButton) {
+                    historyButton.addEventListener('click', () => openHistoryModal(user.user_id));
+                }
 
                 tbody.appendChild(row);
             });
 
             usersEmpty.hidden = true;
             usersTable.hidden = false;
+        }
+
+
+        function openHistoryModal(userId) {
+            if (!userId) {
+                return;
+            }
+
+            activeHistoryUser = userId;
+            historyTitle.textContent = 'ประวัติการสนทนา';
+            historySummary.textContent = 'กำลังโหลดข้อมูลการสนทนา...';
+            historyUserId.textContent = userId;
+            historyTotalMessages.textContent = '--';
+            historyImportantMessages.textContent = '--';
+            historyTotalTokens.textContent = '--';
+            historyImportantRatio.textContent = '--';
+            historyLastInteraction.textContent = '--';
+            historyEmpty.textContent = 'กำลังโหลดข้อมูล...';
+            historyEmpty.hidden = false;
+            historyRiskEmpty.hidden = true;
+            historyRiskEmpty.textContent = 'ยังไม่มีข้อมูล';
+            clearElement(historyList);
+            clearElement(historyRisks);
+
+            historyModal.classList.add('active');
+            historyModal.setAttribute('aria-hidden', 'false');
+            document.body.classList.add('modal-open');
+
+            fetchUserHistory(userId);
+            if (historyClose) {
+                historyClose.focus({ preventScroll: true });
+            }
+        }
+
+        async function fetchUserHistory(userId) {
+            historyLoading = true;
+            try {
+                const response = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/history?limit=80`);
+                if (!response.ok) {
+                    throw new Error(`history_fetch_failed_${response.status}`);
+                }
+                const data = await response.json();
+                populateHistoryModal(data);
+            } catch (error) {
+                console.error('ไม่สามารถโหลดประวัติการสนทนา', error);
+                if (activeHistoryUser !== userId || !historyModal.classList.contains('active')) {
+                    return;
+                }
+                historySummary.textContent = 'ไม่สามารถโหลดข้อมูลได้';
+                historyEmpty.textContent = 'เกิดข้อผิดพลาดในการโหลดข้อมูล โปรดลองใหม่อีกครั้ง';
+                historyEmpty.hidden = false;
+                historyRiskEmpty.hidden = false;
+                historyRiskEmpty.textContent = 'ไม่สามารถโหลดข้อมูลได้';
+            } finally {
+                historyLoading = false;
+            }
+        }
+
+        function populateHistoryModal(data) {
+            if (!historyModal.classList.contains('active')) {
+                return;
+            }
+            if (data && data.user_id && activeHistoryUser && data.user_id !== activeHistoryUser) {
+                return;
+            }
+
+            const summary = (data && data.summary) || {};
+            const userId = summary.user_id || data?.user_id || activeHistoryUser || '-';
+
+            historyTitle.textContent = 'ประวัติการสนทนา';
+            historyUserId.textContent = userId;
+
+            const totalMessages = Number(summary.total_messages) || 0;
+            const importantMessages = Number(summary.important_messages) || 0;
+            const totalTokens = Number(summary.total_tokens) || 0;
+            const importantRatio = Number(summary.important_ratio);
+
+            historySummary.textContent = `รวม ${formatNumber(totalMessages)} ข้อความ · ข้อความสำคัญ ${formatPercent(importantRatio)}`;
+            historyTotalMessages.textContent = formatNumber(totalMessages);
+            historyImportantMessages.textContent = formatNumber(importantMessages);
+            historyTotalTokens.textContent = formatNumber(totalTokens);
+            historyImportantRatio.textContent = formatPercent(importantRatio);
+            historyLastInteraction.textContent = formatTimestamp(summary.last_interaction);
+
+            const historyEntries = Array.isArray(data?.history) ? data.history : [];
+            clearElement(historyList);
+            if (!historyEntries.length) {
+                historyEmpty.textContent = 'ยังไม่มีประวัติการสนทนาที่บันทึกไว้';
+                historyEmpty.hidden = false;
+            } else {
+                historyEmpty.hidden = true;
+                historyEntries.forEach(entry => {
+                    const isImportant = Boolean(entry.important);
+                    const item = document.createElement('li');
+                    item.className = 'conversation-entry' + (isImportant ? ' important' : '');
+                    const timestampLabel = formatTimestamp(entry.timestamp);
+                    item.innerHTML = `
+                        <div class="entry-meta">
+                            <span>${timestampLabel}</span>
+                            ${isImportant ? '<span class="risk-chip medium">สำคัญ</span>' : ''}
+                        </div>
+                        <div class="entry-text">
+                            <div><span class="speaker">ผู้ใช้</span>${escapeHtml(entry.user_message || '-')}</div>
+                            <div><span class="speaker">ใจดี</span>${escapeHtml(entry.bot_response || '-')}</div>
+                        </div>
+                    `;
+                    historyList.appendChild(item);
+                });
+            }
+
+            const riskEvents = Array.isArray(data?.risk_events) ? data.risk_events : [];
+            clearElement(historyRisks);
+            if (!riskEvents.length) {
+                historyRiskEmpty.hidden = false;
+                historyRiskEmpty.textContent = 'ยังไม่มีข้อมูล';
+            } else {
+                historyRiskEmpty.hidden = true;
+                riskEvents.forEach(event => {
+                    const wrapper = document.createElement('div');
+                    const level = (event.risk_level || 'unknown');
+                    const label = escapeHtml(riskLabels[level] || level);
+                    const keywords = Array.isArray(event.keywords) && event.keywords.length
+                        ? escapeHtml(event.keywords.join(', '))
+                        : '-';
+                    wrapper.className = 'history-risk-item';
+                    wrapper.innerHTML = `
+                        <span class="risk-chip ${level}">${label}</span>
+                        <span class="meta">${formatTimestamp(event.timestamp)}</span>
+                        <span class="meta">${keywords}</span>
+                    `;
+                    historyRisks.appendChild(wrapper);
+                });
+            }
+        }
+
+        function closeHistoryModal() {
+            if (!historyModal.classList.contains('active')) {
+                return;
+            }
+            historyModal.classList.remove('active');
+            historyModal.setAttribute('aria-hidden', 'true');
+            document.body.classList.remove('modal-open');
+            activeHistoryUser = null;
+            historyLoading = false;
+            historySummary.textContent = 'เลือกผู้ใช้เพื่อดูรายละเอียด';
+            historyEmpty.textContent = 'เลือกผู้ใช้เพื่อดูบทสนทนา';
+            historyEmpty.hidden = false;
+            historyRiskEmpty.hidden = true;
+            historyRiskEmpty.textContent = 'ยังไม่มีข้อมูล';
+            clearElement(historyList);
+            clearElement(historyRisks);
         }
 
         async function loadInsights() {
@@ -592,6 +1385,7 @@
                 const data = await response.json();
                 updateSummary(data.overview);
                 updateRiskSummary(data.risk_summary);
+                updateInfographic(data.infographic);
                 updateKeywords(data.top_keywords);
                 updateUsers(data.users);
 
@@ -613,6 +1407,20 @@
         });
 
         refreshButton.addEventListener('click', () => loadInsights());
+
+        if (historyClose && historyModal) {
+            historyClose.addEventListener('click', () => closeHistoryModal());
+            historyModal.addEventListener('click', event => {
+                if (event.target === historyModal) {
+                    closeHistoryModal();
+                }
+            });
+        }
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && historyModal && historyModal.classList.contains('active')) {
+                closeHistoryModal();
+            }
+        });
 
         document.addEventListener('DOMContentLoaded', () => {
             loadInsights();
