@@ -4,6 +4,7 @@ Implements performance improvements based on codebase analysis
 """
 import logging
 import time
+from mysql.connector import Error as MySQLError
 from typing import Dict, Any, List, Tuple
 from .database_manager import DatabaseManager
 from .utils import safe_db_operation
@@ -125,6 +126,15 @@ class DatabaseOptimizer:
                 logging.info(f"Index {index_info['index_name']} created successfully in {execution_time:.2f} seconds")
                 success_count += 1
                 
+            except MySQLError as e:
+                if self._is_duplicate_index_error(e):
+                    logging.info(f"Index {index_info['index_name']} already exists on {index_info['table']}")
+                    success_count += 1
+                    continue
+
+                logging.error(f"Failed to create index {index_info['index_name']}: {str(e)}")
+                continue
+
             except Exception as e:
                 logging.error(f"Failed to create index {index_info['index_name']}: {str(e)}")
                 continue
@@ -156,6 +166,13 @@ class DatabaseOptimizer:
         except Exception as e:
             logging.warning(f"Could not check if index {index_name} exists: {str(e)}")
             return False
+
+    def _is_duplicate_index_error(self, error: Exception) -> bool:
+        """Determine if the given error indicates an index already exists"""
+        if isinstance(error, MySQLError) and getattr(error, 'errno', None) == 1831:
+            return True
+        return 'duplicate index' in str(error).lower()
+
     
     @safe_db_operation
     def analyze_table_performance(self) -> Dict[str, Any]:

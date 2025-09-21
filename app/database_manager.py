@@ -134,57 +134,72 @@ class DatabaseManager:
         conn = None
         retries = 0
         last_error = None
-        
+
         while retries < self.max_retries:
+            conn = None
+            connection_yielded = False
             try:
                 # Perform health check if needed
                 self._perform_health_check_if_needed()
-                
+
                 conn = self.pool.get_connection()
-                
+
                 # Verify connection is alive
                 if not conn.is_connected():
                     raise mysql.connector.Error("Connection is not active")
-                    
+
+                connection_yielded = True
                 yield conn
-                break  # Success, exit retry loop
-                
+                return
+
             except mysql.connector.Error as e:
+                # If we've already handed the connection to the caller, propagate the error
+                if connection_yielded:
+                    raise
+
                 last_error = e
                 retries += 1
-                
-                # Only log every 3rd attempt to reduce log spam during startup
+
                 if retries % 3 == 1 or retries >= self.max_retries:
                     logging.error(f"Database connection error (attempt {retries}/{self.max_retries}): {str(e)}")
-                
-                # Handle specific error types
-                if e.errno in [2006, 2013, 2055]:  # Server gone away, lost connection, packet too large
-                    if retries % 3 == 1:  # Only log pool reinit attempts occasionally
+
+                # Handle specific connection-related error types
+                if getattr(e, 'errno', None) in [2006, 2013, 2055]:  # Server gone away, lost connection, packet too large
+                    if retries % 3 == 1:
                         logging.info("Connection lost, attempting to reinitialize pool...")
                     try:
                         self.init_pool()
                     except Exception as init_error:
                         logging.error(f"Failed to reinitialize pool: {str(init_error)}")
-                
+
                 if retries < self.max_retries:
                     sleep_time = self.retry_delay * (2 ** (retries - 1))  # Exponential backoff
-                    if retries % 3 == 1:  # Only log retry messages occasionally
+                    if retries % 3 == 1:
                         logging.info(f"Retrying connection in {sleep_time} seconds...")
                     time.sleep(sleep_time)
                 else:
                     logging.error(f"Failed to get database connection after {self.max_retries} retries")
                     raise last_error
-                    
+
             except Exception as e:
+                if connection_yielded:
+                    raise
                 logging.error(f"Unexpected database error: {str(e)}")
                 raise
+
             finally:
                 if conn and conn.is_connected():
                     try:
                         conn.close()
                     except Exception as close_error:
                         logging.warning(f"Error closing connection: {str(close_error)}")
-    
+                conn = None
+
+        # If loop exits without returning, re-raise last error
+        if last_error is not None:
+            raise last_error
+        raise mysql.connector.Error("Unable to acquire database connection")
+
     @contextmanager
     def get_cursor(self, dictionary=False):
         """
