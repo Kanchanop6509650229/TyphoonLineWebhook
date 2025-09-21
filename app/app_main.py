@@ -48,6 +48,8 @@ from .risk_assessment import (
     save_progress_data,
     generate_progress_report,
     RISK_KEYWORDS,
+    GENERAL_RISK_LEVEL,
+    normalize_risk_level,
 )
 from .database_init import initialize_database
 from .database_manager import DatabaseManager
@@ -237,7 +239,7 @@ def _collect_dashboard_progress_metrics(
     if redis_client is None:
         return {
             'top_keywords': [],
-            'risk_summary': {'high': 0, 'medium': 0, 'low': 0, 'unknown': 0},
+            'risk_summary': {'high': 0, 'medium': 0, 'general': 0, 'unknown': 0},
             'user_progress': {},
         }
 
@@ -255,11 +257,12 @@ def _collect_dashboard_progress_metrics(
                     continue
 
                 timestamp = _parse_progress_timestamp(entry.get('timestamp'))
-                risk_level = (entry.get('risk_level') or 'unknown').lower()
+                raw_level = entry.get('risk_level')
+                risk_level = normalize_risk_level(raw_level)
                 keywords = entry.get('keywords') or []
                 risk_counter[risk_level] += 1
 
-                if risk_level != 'low' and len(recent_events) < limit_per_user:
+                if risk_level in ('high', 'medium') and len(recent_events) < limit_per_user:
                     recent_events.append({
                         'timestamp': timestamp.isoformat() if timestamp else None,
                         'risk_level': risk_level,
@@ -292,7 +295,7 @@ def _collect_dashboard_progress_metrics(
     risk_summary = {
         'high': int(risk_counter.get('high', 0)),
         'medium': int(risk_counter.get('medium', 0)),
-        'low': int(risk_counter.get('low', 0)),
+        'general': int(risk_counter.get(GENERAL_RISK_LEVEL, 0)),
     }
     unknown_total = sum(
         count for level, count in risk_counter.items()
@@ -429,7 +432,7 @@ def get_dashboard_insights():
         risk_summary = progress_metrics.get('risk_summary', {
             'high': 0,
             'medium': 0,
-            'low': 0,
+            'general': 0,
             'unknown': 0,
         })
 
@@ -489,9 +492,10 @@ def get_dashboard_user_history(user_id: str):
                     continue
 
                 timestamp = _parse_progress_timestamp(event.get('timestamp'))
+                normalized_level = normalize_risk_level(event.get('risk_level'))
                 risk_events.append({
                     'timestamp': timestamp.isoformat() if timestamp else event.get('timestamp'),
-                    'risk_level': (event.get('risk_level') or 'unknown').lower(),
+                    'risk_level': normalized_level,
                     'keywords': event.get('keywords') or [],
                 })
 
@@ -1415,6 +1419,8 @@ def process_conversation_data(user_id, user_message, bot_response, messages):
 
     # ตรวจสอบว่าข้อความนี้สำคัญหรือไม่
     is_important = is_important_message(user_message, bot_response)
+    if risk_level == GENERAL_RISK_LEVEL:
+        is_important = False
 
     # บันทึกการสนทนาและกำหนดการติดตาม
     save_chat_session(user_id, messages)
@@ -1793,7 +1799,9 @@ def process_conversation_data_safely(user_id: str, user_message: str, bot_respon
             message_token_count = token_counter.count_tokens(user_message + bot_response)
             risk_level, keywords = assess_risk(user_message)
             is_important = is_important_message(user_message, bot_response)
-            
+            if risk_level == GENERAL_RISK_LEVEL:
+                is_important = False
+
             db.save_conversation(
                 user_id=user_id,
                 user_message=user_message,
@@ -2115,9 +2123,10 @@ def handle_command_with_processing(user_id, command, reply_token=None):
             "🛠️ คำสั่งที่มีให้ใช้:\n"
             "📥 /register - วิธีลงทะเบียนใช้งาน\n"
             "✅ /verify <รหัส> - ยืนยันตัวตนด้วยรหัส 6 หลัก\n"
-            "🔄 /reset - เริ่มประวัติการสนทนาใหม่\n"
             "🧠 /optimize - ปรับปรุงประวัติการสนทนาให้มีประสิทธิภาพ\n"
-            "📈 /tokens - ตรวจสอบการใช้งานโทเค็นในเซสชันปัจจุบัน\n"
+            "🪙 /tokens - ตรวจสอบการใช้งานโทเค็นในเซสชันปัจจุบัน\n"
+            "📊 /status - ดูสรุปสถานะการสนทนาและการใช้โทเค็น\n"
+            "📈 /progress - ดูรายงานความก้าวหน้าและแนวทางถัดไป\n"
             "📋 /context - ดูบริบทของคุณจากแบบประเมินที่กรอกไว้\n"
             "🔔 /followup - ตรวจสอบกำหนดการติดตามของคุณ\n"
             "🚨 /emergency - ดูข้อมูลติดต่อฉุกเฉินและสายด่วน\n"
@@ -2153,7 +2162,8 @@ def handle_command_with_processing(user_id, command, reply_token=None):
             f"▫️ โทเค็นในฐานข้อมูล: {total_db_tokens:,}\n"
             "  (ผลรวมของแต่ละข้อความที่บันทึก)\n\n"
             "💚 น้องใจดีพร้อมให้คำปรึกษาและสนับสนุนคุณตลอดเส้นทางการเลิกสารเสพติด\n"
-            "💬 มีคำถามหรือต้องการความช่วยเหลือ เพียงพิมพ์บอกฉันได้เลยค่ะ"
+            "💬 มีคำถามหรือต้องการความช่วยเหลือ เพียงพิมพ์บอกฉันได้เลยค่ะ\n\n"
+            "ℹ️ เคล็ดลับ: ต้องการดูรายงานความก้าวหน้าของคุณ พิมพ์ /progress"
         )
 
     elif normalized == '/emergency':
@@ -2176,10 +2186,15 @@ def handle_command_with_processing(user_id, command, reply_token=None):
 
     elif normalized == '/progress':
         report = generate_progress_report(user_id)
-        response_text = report if report else (
-            "📊 รายงานความก้าวหน้า\n\n"
-            "ยังไม่มีข้อมูลความก้าวหน้าเพียงพอสำหรับการวิเคราะห์\n\n"
-            "เมื่อเราพูดคุยกันมากขึ้น น้องใจดีจะสามารถติดตามและวิเคราะห์ความก้าวหน้าของคุณได้"
+        response_text = (
+            f"{report}\n\nℹ️ เคล็ดลับ: ต้องการดูสรุปสถานะการสนทนาปัจจุบัน พิมพ์ /status"
+            if report else
+            (
+                "📊 รายงานความก้าวหน้า\n\n"
+                "ยังไม่มีข้อมูลความก้าวหน้าเพียงพอสำหรับการวิเคราะห์\n\n"
+                "เมื่อเราพูดคุยกันมากขึ้น น้องใจดีจะสามารถติดตามและวิเคราะห์ความก้าวหน้าของคุณได้\n\n"
+                "ℹ️ เคล็ดลับ: ดูสรุปสถานะล่าสุดด้วย /status"
+            )
         )
 
     elif normalized == '/register':

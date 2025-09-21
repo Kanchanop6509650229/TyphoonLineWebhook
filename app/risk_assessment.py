@@ -81,6 +81,21 @@ RISK_KEYWORDS = {
 # จำนวนคำความเสี่ยงระดับปานกลางที่จะยกระดับเป็นความเสี่ยงสูง
 MEDIUM_RISK_THRESHOLD = 2
 
+GENERAL_RISK_LEVEL = 'general'
+LEGACY_LOW_RISK_LEVEL = 'low'
+LOW_RISK_LEVELS = {GENERAL_RISK_LEVEL, LEGACY_LOW_RISK_LEVEL}
+
+
+def normalize_risk_level(level: str) -> str:
+    """Normalize risk level values, mapping legacy low risk to general."""
+    normalized = (level or '').lower()
+    if not normalized:
+        return 'unknown'
+    if normalized in LOW_RISK_LEVELS:
+        return GENERAL_RISK_LEVEL
+    return normalized
+
+
 
 def init_risk_assessment(redis_instance) -> None:
     """Initialize Redis client for risk assessment."""
@@ -114,15 +129,16 @@ def assess_risk(message: str) -> Tuple[str, List[str]]:
     elif medium_matches:
         return "medium", matched_keywords
 
-    return "low", matched_keywords
+    return GENERAL_RISK_LEVEL, matched_keywords
 
 
 def save_progress_data(user_id: str, risk_level: str, keywords: List[str]) -> None:
     """Save user progress data to Redis."""
     try:
+        normalized_level = normalize_risk_level(risk_level)
         progress_data = {
             'timestamp': datetime.now().isoformat(),
-            'risk_level': risk_level,
+            'risk_level': normalized_level,
             'keywords': keywords
         }
         redis_client.lpush(f"progress:{user_id}", json.dumps(progress_data))
@@ -139,10 +155,12 @@ def generate_progress_report(user_id: str) -> str:
             return "ยังไม่มีข้อมูลความก้าวหน้า"
 
         data = [json.loads(item) for item in progress_data]
+        for entry in data:
+            entry['risk_level'] = normalize_risk_level(entry.get('risk_level'))
         risk_trends = {
             'high': sum(1 for d in data if d['risk_level'] == 'high'),
             'medium': sum(1 for d in data if d['risk_level'] == 'medium'),
-            'low': sum(1 for d in data if d['risk_level'] == 'low')
+            'general': sum(1 for d in data if d['risk_level'] == GENERAL_RISK_LEVEL)
         }
         report = (
             "📊 รายงานความก้าวหน้า\n\n"
@@ -150,7 +168,7 @@ def generate_progress_report(user_id: str) -> str:
             f"📈 การประเมินความเสี่ยง:\n"
             f"▫️ ความเสี่ยงสูง: {risk_trends['high']} ครั้ง\n"
             f"▫️ ความเสี่ยงปานกลาง: {risk_trends['medium']} ครั้ง\n"
-            f"▫️ ความเสี่ยงต่ำ: {risk_trends['low']} ครั้ง\n"
+            f"▫️ ข้อความทั่วไป: {risk_trends['general']} ข้อความ\n"
         )
         return report
     except Exception as e:

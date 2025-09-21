@@ -321,7 +321,7 @@ class ConversationSchema(Schema):
     timestamp = fields.DateTime(required=True)
     token_count = fields.Integer(validate=validate.Range(min=0, max=10000))
     important_flag = fields.Boolean(missing=False)
-    risk_level = fields.String(validate=validate.OneOf(['low', 'medium', 'high']))
+    risk_level = fields.String(validate=validate.OneOf(['general', 'medium', 'high', 'low']))
 
 class HealthCheckSchema(Schema):
     """Schema for health check requests"""

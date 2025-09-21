@@ -15,6 +15,7 @@
             --border: #e5e7eb;
             --high: #dc2626;
             --medium: #f59e0b;
+            --general: #16a34a;
             --low: #16a34a;
             --unknown: #6b7280;
         }
@@ -222,6 +223,7 @@
         .risk-fill.high { background: var(--high); }
         .risk-fill.medium { background: var(--medium); }
         .risk-fill.low { background: var(--low); }
+        .risk-fill.general { background: var(--general); }
         .risk-fill.unknown { background: var(--unknown); }
 
         .empty-state {
@@ -272,6 +274,7 @@
         .risk-chip.high { background: rgba(220, 38, 38, 0.12); color: var(--high); }
         .risk-chip.medium { background: rgba(245, 158, 11, 0.14); color: var(--medium); }
         .risk-chip.low { background: rgba(22, 163, 74, 0.14); color: var(--low); }
+        .risk-chip.general { background: rgba(22, 163, 74, 0.14); color: var(--general); }
         .risk-chip.unknown { background: rgba(107, 114, 128, 0.16); color: var(--unknown); }
 
         .risk-event {
@@ -922,6 +925,7 @@
         const riskLabels = {
             high: 'สูง',
             medium: 'ปานกลาง',
+            general: 'ทั่วไป',
             low: 'ต่ำ',
             unknown: 'ไม่ระบุ',
             contextual: 'บริบท'
