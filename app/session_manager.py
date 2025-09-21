@@ -42,15 +42,16 @@ def save_chat_session(user_id: str, messages: List[Dict[str, str]]) -> None:
             {"role": msg["role"], "content": msg["content"]}
             for msg in messages[-max_messages:]
         ]
+        ttl_seconds = max(int(SESSION_TIMEOUT or 0), 60)
         redis_client.setex(
             f"chat_session:{user_id}",
-            3600 * 24,
+            ttl_seconds,
             json.dumps(serialized_history),
         )
         token_count = token_counter.count_message_tokens(serialized_history)
         redis_client.setex(
             f"session_tokens:{user_id}",
-            3600 * 24,
+            ttl_seconds,
             str(token_count),
         )
         logging.debug(
@@ -128,9 +129,10 @@ def get_session_token_count(user_id: str) -> int:
             return 0
         messages = json.loads(session_data)
         token_count = token_counter.count_message_tokens(messages)
+        ttl_seconds = max(int(SESSION_TIMEOUT or 0), 60)
         redis_client.setex(
             f"session_tokens:{user_id}",
-            3600 * 24,
+            ttl_seconds,
             str(token_count),
         )
         return token_count

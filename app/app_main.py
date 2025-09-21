@@ -60,13 +60,14 @@ from .error_handling import (
     get_error_handler
 )
 import traceback
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Optional, List, Dict, Tuple, Any, Set
 from enum import Enum
 
 # ค่าคงที่ส่วนของการแอพลิเคชัน
 FOLLOW_UP_INTERVALS = [1, 3, 7, 14, 30]  # จำนวนวันในการติดตาม
 SESSION_TIMEOUT = 604800  # 7 วัน (7 * 24 * 60 * 60 วินาที)
 MESSAGE_LOCK_TIMEOUT = 30  # ระยะเวลาล็อค (วินาที)
+DB_RESTORE_MESSAGE_PAIRS = 40  # จำนวนคู่ข้อความล่าสุดที่ใช้ในการกู้คืนจากฐานข้อมูล
 PROCESSING_MESSAGES = [
     "⌛ กำลังคิดอยู่ค่ะ...",
     "🤔 กำลังประมวลผลข้อความของคุณ...",
@@ -1672,32 +1673,65 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
         handle_unexpected_error(e, user_id, user_message, reply_token=reply_token)
 
 
+
+def history_to_messages(history: List[Tuple], max_pairs: int = DB_RESTORE_MESSAGE_PAIRS) -> Tuple[List[Dict[str, str]], Set[int]]:
+    """Convert database conversation rows into chronological chat messages."""
+    if not history:
+        return [], set()
+
+    history_sorted = sorted(history, key=lambda item: item[0])
+    trimmed_history = history_sorted[-max_pairs:] if max_pairs else history_sorted
+    used_ids: Set[int] = {entry[0] for entry in trimmed_history if entry and len(entry) > 0}
+
+    messages: List[Dict[str, str]] = []
+    for _, user_msg, bot_resp in trimmed_history:
+        if user_msg:
+            messages.append({"role": "user", "content": user_msg})
+        if bot_resp:
+            messages.append({"role": "assistant", "content": bot_resp})
+
+    return messages, used_ids
+
 def prepare_conversation_messages(user_id: str, user_context: Optional[str]) -> List[Dict[str, str]]:
     """เตรียมข้อความสำหรับการสนทนา พร้อมจัดการข้อผิดพลาด"""
     try:
         session_token_count = get_session_token_count(user_id)
         logging.info(f"จำนวนโทเค็นปัจจุบัน: {session_token_count} (ผู้ใช้: {user_id})")
-        
+
         if session_token_count > TOKEN_THRESHOLD:
             raise TokenThresholdExceeded(f"Token count {session_token_count} exceeds threshold")
-        
-        # ดึงประวัติการสนทนา
+
         messages = get_chat_session(user_id) or []
-        
-        # เพิ่มประวัติจากฐานข้อมูลถ้าจำเป็น
+        used_history_ids: Set[int] = set()
+        history_for_summary: List[Tuple] = []
+
+        history_token_limit = 20000 if not messages else 10000
         try:
-            optimized_history = db.get_user_history(user_id, max_tokens=10000)
-            if optimized_history:
-                prepare_conversation_context(messages, optimized_history)
+            history_for_summary = db.get_user_history(user_id, max_tokens=history_token_limit) or []
         except Exception as e:
             logging.warning(f"ไม่สามารถโหลดประวัติจากฐานข้อมูล: {str(e)}")
-        
-        # เพิ่มบริบทถ้ามี
+            history_for_summary = []
+
+        if not messages and history_for_summary:
+            restored_messages, used_history_ids = history_to_messages(history_for_summary, max_pairs=DB_RESTORE_MESSAGE_PAIRS)
+            if restored_messages:
+                messages = restored_messages
+                try:
+                    save_chat_session(user_id, messages)
+                    logging.info(f"กู้คืนประวัติการสนทนาจากฐานข้อมูลสำหรับผู้ใช้ {user_id}: {len(messages)} ข้อความ")
+                except Exception as store_error:
+                    logging.warning(f"ไม่สามารถบันทึกเซสชันที่กู้คืนสำหรับผู้ใช้ {user_id}: {store_error}")
+        elif history_for_summary:
+            _, used_history_ids = history_to_messages(history_for_summary, max_pairs=DB_RESTORE_MESSAGE_PAIRS)
+
+        if history_for_summary:
+            prepare_conversation_context(messages, history_for_summary, used_history_ids)
+
         if user_context:
             add_context_to_messages(messages, user_context)
-            
+
         return messages
-        
+
     except Exception as e:
         logging.error(f"Error in prepare_conversation_messages: {str(e)}")
         raise
@@ -2014,18 +2048,28 @@ def send_rate_limit_notification(user_id: str, wait_time: int):
         pass  # ถ้าส่งไม่ได้ก็ไม่เป็นไร
 
 
-def prepare_conversation_context(messages, optimized_history):
-    """เตรียมบริบทการสนทนาโดยใช้ประวัติ"""
-    # ตรวจสอบว่า optimized_history เป็น None หรือไม่
-    if optimized_history is None:
-        # ถ้าเป็น None ให้ใช้ list ว่าง
-        optimized_history = []
+def prepare_conversation_context(messages, optimized_history, used_history_ids: Optional[Set[int]] = None):
+    """Prepare conversation context by using stored history."""
+    optimized_history = optimized_history or []
+    used_history_ids = used_history_ids or set()
 
-    if len(optimized_history) > 5:
-        summary = summarize_conversation_history(optimized_history[5:])
-        if summary:
-            # ใช้ role พิเศษสำหรับการสรุปที่ไม่แสดงให้ผู้ใช้เห็น
-            messages.append({"role": "system_summary", "content": f"สรุปการสนทนาก่อนหน้า: {summary}"})
+    if not optimized_history:
+        return
+
+    history_sorted = sorted(optimized_history, key=lambda item: item[0])
+    if used_history_ids:
+        history_for_summary = [entry for entry in history_sorted if entry[0] not in used_history_ids]
+    else:
+        history_for_summary = history_sorted[5:]
+
+    if not history_for_summary:
+        return
+
+    summary = summarize_conversation_history(history_for_summary)
+    if summary:
+        messages[:] = [msg for msg in messages if msg.get('role') != 'system_summary']
+        messages.append({"role": "system_summary", "content": "สรุปการสนทนาก่อนหน้า: " + summary})
+
 
 def send_session_timeout_message(user_id, reply_token=None):
     """ส่งข้อความเซสชันหมดอายุ"""
