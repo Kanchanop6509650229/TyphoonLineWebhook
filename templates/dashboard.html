@@ -1338,13 +1338,14 @@
             }
 
             const riskEvents = Array.isArray(data?.risk_events) ? data.risk_events : [];
+            const filteredRiskEvents = riskEvents.filter(event => (event?.risk_level || 'unknown') !== 'general');
             clearElement(historyRisks);
-            if (!riskEvents.length) {
+            if (!filteredRiskEvents.length) {
                 historyRiskEmpty.hidden = false;
                 historyRiskEmpty.textContent = 'ยังไม่มีข้อมูล';
             } else {
                 historyRiskEmpty.hidden = true;
-                riskEvents.forEach(event => {
+                filteredRiskEvents.forEach(event => {
                     const wrapper = document.createElement('div');
                     const level = (event.risk_level || 'unknown');
                     const label = escapeHtml(riskLabels[level] || level);
