@@ -1294,10 +1294,15 @@
                   label: 'สัดส่วนข้อความสำคัญ (%)',
                   data: importantShares.map((value) => Number.isFinite(value) ? Number(value.toFixed(2)) : 0),
                   borderColor: '#f97316',
+                  backgroundColor: 'rgba(249,115,22,0.18)',
                   tension: 0.32,
-                  pointRadius: 0,
+                  pointRadius: 2.5,
+                  pointHoverRadius: 4,
+                  pointBackgroundColor: '#f97316',
+                  pointBorderColor: '#ffffff',
+                  pointBorderWidth: 1,
                   yAxisID: 'percentage',
-                  fill: false
+                  fill: 'origin'
                 }
               ]
             },
@@ -1943,4 +1948,5 @@
   {% endraw %}
 </body>
 </html>
+
 
