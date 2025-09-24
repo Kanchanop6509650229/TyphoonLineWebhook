@@ -260,8 +260,7 @@ def generate_contextual_followup_message(user_id: str, db, config):
 7. เริ่มต้นด้วยคำทักทายที่เหมาะสม
 
 โปรดสร้างข้อความติดตามที่แสดงให้เห็นว่าคุณจำและเข้าใจบริบทของการสนทนาก่อนหน้า:
-
-ข้อความติดตาม:"""
+"""
 
         # เรียกใช้ xAI Grok API ด้วยการตั้งค่าที่เหมาะสม
         text = grok_client.send_chat(
