@@ -20,6 +20,7 @@ from random import choice
 from collections import Counter
 import signal
 import atexit
+import math
 from waitress import serve
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.base import SchedulerNotRunningError
@@ -1585,7 +1586,7 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
                     
                 break  # สำเร็จ
                 
-            except requests.exceptions.Timeout:
+            except requests.exceptions.Timeout as timeout_error:
                 retry_count += 1
                 if retry_count < max_retries:
                     logging.warning(f"AI API timeout (attempt {retry_count}/{max_retries})")
@@ -1594,7 +1595,7 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
                     raise create_legacy_chatbot_error(
                         ErrorType.AI_API_ERROR,
                         "AI API timeout after all retries",
-                        e
+                        timeout_error
                     )
                     
             except RateLimitError as e:
@@ -1767,6 +1768,7 @@ def generate_ai_response_with_timeout(messages: List[Dict[str, str]], timeout: i
     import concurrent.futures
 
     filtered_messages = filter_messages_for_api(messages)
+    effective_timeout = _calculate_adaptive_timeout(filtered_messages, base_timeout=timeout)
 
     def _call() -> str:
         return grok_client.send_chat(
@@ -1778,9 +1780,48 @@ def generate_ai_response_with_timeout(messages: List[Dict[str, str]], timeout: i
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future = executor.submit(_call)
         try:
-            return future.result(timeout=timeout)
+            return future.result(timeout=effective_timeout)
         except concurrent.futures.TimeoutError:
-            raise requests.exceptions.Timeout(f"AI API timeout after {timeout} seconds")
+            raise requests.exceptions.Timeout(f"AI API timeout after {effective_timeout} seconds")
+
+
+def _calculate_adaptive_timeout(filtered_messages: List[Dict[str, str]], base_timeout: int = 30) -> int:
+    """คำนวณ timeout ตามขนาดข้อความเพื่อรองรับบริบทที่ยาวขึ้น"""
+    max_timeout = max(base_timeout, 120)
+
+    token_count = 0
+    char_count = 0
+
+    try:
+        payload = [SYSTEM_MESSAGES] + filtered_messages
+        if token_counter is not None:
+            token_count = token_counter.count_message_tokens(payload)
+    except Exception as token_error:
+        logging.debug(f"Adaptive timeout token count failed: {token_error}")
+
+    try:
+        char_count = sum(len(message.get('content', '')) for message in filtered_messages)
+    except Exception as length_error:
+        logging.debug(f"Adaptive timeout length calculation failed: {length_error}")
+
+    adaptive_timeout = base_timeout
+
+    if token_count > 1000:
+        extra_token_units = math.ceil((token_count - 1000) / 400)
+        adaptive_timeout += extra_token_units * 5
+
+    if char_count > 4000:
+        extra_length_units = math.ceil((char_count - 4000) / 2000)
+        adaptive_timeout += extra_length_units * 5
+
+    adaptive_timeout = max(base_timeout, min(adaptive_timeout, max_timeout))
+
+    logging.debug(
+        f"Adaptive timeout computed: base={base_timeout}s, tokens={token_count}, "
+        f"chars={char_count}, result={adaptive_timeout}s"
+    )
+
+    return adaptive_timeout
 
 
 def generate_fallback_response(user_message: str, user_context: Optional[str]) -> str:
