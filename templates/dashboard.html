@@ -204,30 +204,6 @@
       transform: translateY(-2px);
     }
 
-    .auto-refresh-toggle {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 16px;
-      border-radius: 999px;
-      background: rgba(255, 255, 255, 0.12);
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      color: #f8fafc;
-      font-size: 0.9rem;
-      font-weight: 500;
-      transition: all 0.3s ease;
-    }
-
-    .auto-refresh-toggle.active {
-      background: rgba(34, 197, 94, 0.2);
-      border-color: rgba(34, 197, 94, 0.4);
-    }
-
-    .auto-refresh-toggle:hover {
-      background: rgba(255, 255, 255, 0.2);
-      transform: translateY(-2px);
-    }
-
     .eyebrow {
       font-size: 0.8rem;
       font-weight: 600;
@@ -1268,7 +1244,6 @@
       .primary-button,
       .secondary-button,
       .theme-toggle,
-      .auto-refresh-toggle,
       .hero-actions {
         display: none !important;
       }
@@ -1403,7 +1378,7 @@
         return html`<span className=${className} aria-hidden="true"></span>`;
       }
 
-      function FilterPanel({ params, onParamChange, onRefresh, lastUpdatedLabel, loading, onExport, autoRefreshEnabled, onToggleAutoRefresh }) {
+      function FilterPanel({ params, onParamChange, onRefresh, lastUpdatedLabel, loading, onExport }) {
         return html`
           <section className="card filter-panel">
             <div className="panel-header">
@@ -2219,7 +2194,6 @@
           const saved = localStorage.getItem('dashboard-theme');
           return saved || 'light';
         });
-        const [autoRefresh, setAutoRefresh] = useState(false);
         const autoRefreshTimerRef = useRef(null);
 
         useEffect(() => {
@@ -2228,23 +2202,17 @@
         }, [theme]);
 
         useEffect(() => {
-          if (autoRefresh) {
-            autoRefreshTimerRef.current = setInterval(() => {
-              setRefreshIndex(i => i + 1);
-            }, 60000); // Auto-refresh every 60 seconds
-          } else {
-            if (autoRefreshTimerRef.current) {
-              clearInterval(autoRefreshTimerRef.current);
-              autoRefreshTimerRef.current = null;
-            }
-          }
+          // Auto-refresh every 60 seconds
+          autoRefreshTimerRef.current = setInterval(() => {
+            setRefreshIndex(i => i + 1);
+          }, 60000);
 
           return () => {
             if (autoRefreshTimerRef.current) {
               clearInterval(autoRefreshTimerRef.current);
             }
           };
-        }, [autoRefresh]);
+        }, []);
 
         useEffect(() => {
           let active = true;
@@ -2359,10 +2327,6 @@
           setTheme(current => current === 'light' ? 'dark' : 'light');
         }, []);
 
-        const toggleAutoRefresh = useCallback(() => {
-          setAutoRefresh(current => !current);
-        }, []);
-
         const generatedAtLabel = useMemo(() => formatDateTime(insights?.generated_at), [insights?.generated_at]);
         const overview = insights?.overview || { total_conversations: 0, unique_users: 0, important_messages: 0, active_follow_ups: 0 };
         const riskSummary = insights?.risk_summary || { high: 0, medium: 0, general: 0, unknown: 0 };
@@ -2386,15 +2350,11 @@
                     ${loading ? html`<${Spinner} size="sm" />` : null}
                     <span>${loading ? 'กำลังอัปเดตข้อมูล...' : (error ? 'มีข้อผิดพลาดในการอัปเดต' : 'ข้อมูลพร้อมใช้งาน')}</span>
                   </span>
-                  <p>อัปเดตล่าสุด: ${generatedAtLabel || '—'}</p>
+                  <p>อัปเดตล่าสุด: ${generatedAtLabel || '—'} (อัปเดตอัตโนมัติทุก 60 วินาที)</p>
                   <div className="hero-actions">
                     <button className="theme-toggle" onClick=${toggleTheme} aria-label="สลับธีม">
                       <span aria-hidden="true">${theme === 'light' ? '🌙' : '☀️'}</span>
                       <span>${theme === 'light' ? 'โหมดมืด' : 'โหมดสว่าง'}</span>
-                    </button>
-                    <button className=${`auto-refresh-toggle ${autoRefresh ? 'active' : ''}`} onClick=${toggleAutoRefresh} aria-label="สลับการอัปเดตอัตโนมัติ">
-                      <span aria-hidden="true">${autoRefresh ? '⏸' : '▶'}</span>
-                      <span>${autoRefresh ? 'หยุดอัปเดตอัตโนมัติ' : 'อัปเดตอัตโนมัติ'}</span>
                     </button>
                   </div>
                 </div>
@@ -2408,8 +2368,6 @@
                 lastUpdatedLabel=${generatedAtLabel}
                 loading=${loading}
                 onExport=${handleExport}
-                autoRefreshEnabled=${autoRefresh}
-                onToggleAutoRefresh=${toggleAutoRefresh}
               />
               ${error && !insights
                 ? html`<div className="card error-card">
