@@ -219,9 +219,9 @@ def generate_contextual_followup_message(user_id: str, db, config):
     from .llm import grok_client
     
     try:
-        # ดึงประวัติการสนทนาล่าสุด 20 ครั้ง โดยใช้ max_tokens แทน limit
-        # ใช้ max_tokens สูงเพื่อให้ได้ประมาณ 20 ข้อความล่าสุด
-        recent_history = db.get_user_history(user_id, max_tokens=20000)
+        # ดึงประวัติการสนทนาล่าสุด โดยใช้ max_tokens แทน limit
+        # ปรับให้เหมาะกับ context window ของ grok-4-fast-reasoning
+        recent_history = db.get_user_history(user_id, max_tokens=500000)
         
         # ถ้าไม่มีประวัติการสนทนา ใช้ข้อความติดตามทั่วไป
         if not recent_history:
@@ -270,7 +270,7 @@ def generate_contextual_followup_message(user_id: str, db, config):
             ],
             model=config.XAI_MODEL,
             temperature=0.6,
-            max_tokens=250,
+            max_tokens=500,
             top_p=0.85,
         )
         
