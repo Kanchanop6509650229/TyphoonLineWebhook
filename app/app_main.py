@@ -1,6 +1,6 @@
 """
 แชทบอท 'ใจดี' - แอปพลิเคชันหลัก
-โค้ดหลักสำหรับการจัดการข้อความจาก LINE API และการตอบกลับด้วย DeepSeek API
+โค้ดหลักสำหรับการจัดการข้อความจาก LINE API และการตอบกลับด้วย xAI Grok API
 """
 import os
 import json
@@ -9,25 +9,27 @@ from logging.handlers import RotatingFileHandler
 import requests
 import time
 import threading
-import asyncio
 import re
 from datetime import datetime, timedelta
-from flask import Flask, request, abort, jsonify
+from flask import Flask, request, abort, jsonify, render_template
 from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
+from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, FollowEvent
-from openai import OpenAI
 import redis
 from random import choice
+from collections import Counter
 import signal
 import atexit
+import math
 from waitress import serve
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.base import SchedulerNotRunningError
 
 # นำเข้าโมดูลภายในโปรเจค
 from .middleware.rate_limiter import init_limiter
 from .config import load_config, SYSTEM_MESSAGES, GENERATION_CONFIG, SUMMARY_GENERATION_CONFIG, TOKEN_THRESHOLD
-from .utils import safe_db_operation, safe_api_call, clean_ai_response, handle_deepseek_api_error, check_hospital_inquiry, get_hospital_information_message
+from .utils import safe_db_operation, safe_api_call, clean_ai_response, check_hospital_inquiry, get_hospital_information_message, handle_grok_api_error
+from .llm import grok_client
 from .chat_history_db import ChatHistoryDB
 from .token_counter import TokenCounter
 from .session_manager import (
@@ -46,16 +48,39 @@ from .risk_assessment import (
     assess_risk,
     save_progress_data,
     generate_progress_report,
+    RISK_KEYWORDS,
+    GENERAL_RISK_LEVEL,
+    normalize_risk_level,
 )
-from .async_api import AsyncDeepseekClient
 from .database_init import initialize_database
 from .database_manager import DatabaseManager
+from .error_handling import (
+    ChatbotError,
+    ErrorCategory,
+    ErrorSeverity,
+    get_error_handler
+)
 import traceback
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any, Set
 from enum import Enum
 
+# ค่าคงที่ส่วนของการแอพลิเคชัน
+FOLLOW_UP_INTERVALS = [1, 3, 7, 14, 30]  # จำนวนวันในการติดตาม
+SESSION_TIMEOUT = 604800  # 7 วัน (7 * 24 * 60 * 60 วินาที)
+MESSAGE_LOCK_TIMEOUT = 30  # ระยะเวลาล็อค (วินาที)
+DB_RESTORE_MESSAGE_PAIRS = 40  # จำนวนคู่ข้อความล่าสุดที่ใช้ในการกู้คืนจากฐานข้อมูล
+PROCESSING_MESSAGES = [
+    "⌛ กำลังคิดอยู่ค่ะ...",
+    "🤔 กำลังประมวลผลข้อความของคุณ...",
+    "📝 กำลังเรียบเรียงคำตอบ...",
+    "🔄 รอสักครู่นะคะ..."
+]
+HIGH_RISK_KEYWORDS = {kw.lower() for kw in RISK_KEYWORDS.get('high_risk', [])}
+MEDIUM_RISK_KEYWORDS = {kw.lower() for kw in RISK_KEYWORDS.get('medium_risk', [])}
+
+# Legacy error types for backward compatibility - will be migrated to new system
 class ErrorType(Enum):
-    """ประเภทข้อผิดพลาดที่อาจเกิดขึ้น"""
+    """Legacy error types - use ErrorCategory instead"""
     CONTEXT_LOAD_ERROR = "context_load_error"
     TOKEN_MANAGEMENT_ERROR = "token_management_error"
     AI_API_ERROR = "ai_api_error"
@@ -63,18 +88,12 @@ class ErrorType(Enum):
     DATABASE_ERROR = "database_error"
     UNKNOWN_ERROR = "unknown_error"
 
-class ChatbotError(Exception):
-    """Custom exception สำหรับ chatbot"""
-    def __init__(self, error_type: ErrorType, message: str, original_error: Optional[Exception] = None):
-        self.error_type = error_type
-        self.message = message
-        self.original_error = original_error
-        super().__init__(self.message)
-
-SESSION_TIMEOUT = 604800
-
 # สร้างอินสแตนซ์แอป Flask
-app = Flask(__name__)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
+STATIC_DIR = os.path.join(BASE_DIR, 'static')
+
+app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 
 # ตั้งค่าการบันทึกข้อมูลและหมุนไฟล์เมื่อขนาดเกิน 5MB
 os.makedirs('logs', exist_ok=True)
@@ -107,12 +126,7 @@ try:
     line_bot_api = LineBotApi(config.LINE_CHANNEL_ACCESS_TOKEN)
     handler = WebhookHandler(config.LINE_CHANNEL_SECRET)
 
-    # เริ่มต้น DeepSeek client
-    deepseek_client = OpenAI(api_key=config.DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
-
-    # เริ่มต้น Async client สำหรับการประมวลผลเบื้องหลัง
-    async_deepseek = AsyncDeepseekClient(config.DEEPSEEK_API_KEY, config.DEEPSEEK_MODEL)
-    threading.Thread(target=lambda: asyncio.run(async_deepseek.setup())).start()
+    # ใช้ Grok client ผ่านโมดูลรวมศูนย์ app/llm/grok_client.py
 
     # เริ่มต้นตัวนับโทเค็นที่ปรับปรุงแล้ว
     token_counter = TokenCounter(cache_size=5000)
@@ -126,12 +140,44 @@ try:
         'MYSQL_DB': config.MYSQL_DB
     }
 
-    # สร้าง DatabaseManager ด้วยการตั้งค่าที่เหมาะสม
-    db_manager = DatabaseManager(db_config, pool_size=20)
+    # สร้าง DatabaseManager ด้วยการตั้งค่าที่เหมาะสม with retry logic for container startup
+    max_db_retries = 5
+    db_retry_count = 0
+    db_manager = None
+    
+    while db_retry_count < max_db_retries:
+        try:
+            db_manager = DatabaseManager(db_config, pool_size=32)
+            break  # Success, exit retry loop
+        except Exception as e:
+            db_retry_count += 1
+            if db_retry_count >= max_db_retries:
+                logging.critical(f"เกิดข้อผิดพลาดในการเริ่มต้นแอพพลิเคชัน: {str(e)}")
+                logging.critical(f"เกิดข้อผิดพลาดร้ายแรงในการเริ่มต้นแอพพลิเคชัน: {str(e)}")
+                raise
+            else:
+                wait_time = 5 * db_retry_count
+                logging.warning(f"Database initialization failed (attempt {db_retry_count}/{max_db_retries}), retrying in {wait_time} seconds: {str(e)}")
+                time.sleep(wait_time)
+    
+    # Ensure db_manager is not None before proceeding
+    if db_manager is None:
+        raise RuntimeError("Failed to initialize database manager after all retries")
 
-    # เริ่มต้นฐานข้อมูล (สร้างตารางถ้ายังไม่มี)
+    # เสร็จสิ้นการตรวจสอบและเริ่มต้นฐานข้อมูล
     initialize_database(db_config)
-    logging.info("เสร็จสิ้นการตรวจสอบและเริ่มต้นฐานข้อมูล")
+    logging.info("เสร็จสิ้นการเริ่มต้นและตรวจสอบฐานข้อมูล")
+    
+    # Apply database optimizations
+    try:
+        from .database_optimization import optimize_database
+        optimization_result = optimize_database(db_config)
+        if optimization_result:
+            logging.info("การปรับปรุงประสิทธิภาพฐานข้อมูลสำเร็จ")
+        else:
+            logging.warning("การปรับปรุงประสิทธิภาพฐานข้อมูลเสร็จสิ้นแต่มีปัญหาบางส่วน")
+    except Exception as e:
+        logging.error(f"ไม่สามารถรันการปรับปรุงฐานข้อมูลได้: {str(e)}")
 
     # เริ่มต้น ChatHistoryDB ด้วย DatabaseManager
     db = ChatHistoryDB(db_manager)
@@ -144,21 +190,392 @@ except Exception as e:
     logging.critical(f"เกิดข้อผิดพลาดในการเริ่มต้นแอปพลิเคชัน: {str(e)}")
     raise
 
-# เริ่มต้น rate limiter
+# เน€เธฃเธดเนเธกเธ•เนเธ rate limiter
 limiter = init_limiter(app)
 
-# ค่าคงที่ส่วนของการแอพลิเคชัน
-FOLLOW_UP_INTERVALS = [1, 3, 7, 14, 30]  # จำนวนวันในการติดตาม
-SESSION_TIMEOUT = 604800  # 7 วัน (7 * 24 * 60 * 60 วินาที)
-MESSAGE_LOCK_TIMEOUT = 30  # ระยะเวลาล็อค (วินาที)
-PROCESSING_MESSAGES = [
-    "⌛ กำลังคิดอยู่ค่ะ...",
-    "🤔 กำลังประมวลผลข้อความของคุณ...",
-    "📝 กำลังเรียบเรียงคำตอบ...",
-    "🔄 รอสักครู่นะคะ..."
-]
+@limiter.exempt
+@app.route('/dashboard', methods=['GET'])
+def dashboard_page():
+    return render_template('dashboard.html')
 
-# คำที่บ่งชี้ความเสี่ยง
+
+
+
+
+
+def _parse_progress_timestamp(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            if value.endswith('Z'):
+                try:
+                    return datetime.fromisoformat(value.replace('Z', '+00:00'))
+                except ValueError:
+                    return None
+    return None
+
+
+def _classify_keyword_risk(keyword: str) -> str:
+    key_lower = keyword.lower()
+    if key_lower in HIGH_RISK_KEYWORDS:
+        return 'high'
+    if key_lower in MEDIUM_RISK_KEYWORDS:
+        return 'medium'
+    return 'contextual'
+
+
+def _collect_dashboard_progress_metrics(
+    lookback_days: int = 30,
+    per_user_limit: int = 5,
+    keyword_limit: int = 10,
+) -> Dict[str, Any]:
+    keyword_counter: Counter[str] = Counter()
+    display_lookup: Dict[str, str] = {}
+    risk_counter: Counter[str] = Counter()
+    user_progress: Dict[str, List[Dict[str, Any]]] = {}
+    if redis_client is None:
+        return {
+            'top_keywords': [],
+            'risk_summary': {'high': 0, 'medium': 0, 'general': 0, 'unknown': 0},
+            'user_progress': {},
+        }
+
+    cutoff = datetime.now() - timedelta(days=max(1, lookback_days))
+    try:
+        for key in redis_client.scan_iter('progress:*'):
+            user_id = key.split(':', 1)[1] if ':' in key else key
+            entries = redis_client.lrange(key, 0, -1)
+            limit_per_user = max(1, per_user_limit)
+            recent_events: List[Dict[str, Any]] = []
+            for raw in entries:
+                try:
+                    entry = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+
+                timestamp = _parse_progress_timestamp(entry.get('timestamp'))
+                raw_level = entry.get('risk_level')
+                risk_level = normalize_risk_level(raw_level)
+                keywords = entry.get('keywords') or []
+                risk_counter[risk_level] += 1
+
+                if risk_level in ('high', 'medium') and len(recent_events) < limit_per_user:
+                    recent_events.append({
+                        'timestamp': timestamp.isoformat() if timestamp else None,
+                        'risk_level': risk_level,
+                        'keywords': keywords,
+                    })
+
+                if timestamp and timestamp >= cutoff:
+                    for keyword in keywords:
+                        normalized = keyword.strip()
+                        if not normalized:
+                            continue
+                        lowered = normalized.lower()
+                        keyword_counter[lowered] += 1
+                        display_lookup.setdefault(lowered, normalized)
+
+            if recent_events:
+                user_progress[user_id] = recent_events
+    except Exception as exc:
+        logging.warning('Failed to collect progress metrics: %s', exc)
+
+    top_keywords: List[Dict[str, Any]] = []
+    for lowered, count in keyword_counter.most_common(max(1, keyword_limit)):
+        label = display_lookup.get(lowered, lowered)
+        top_keywords.append({
+            'keyword': label,
+            'count': int(count),
+            'risk_level': _classify_keyword_risk(lowered),
+        })
+
+    risk_summary = {
+        'high': int(risk_counter.get('high', 0)),
+        'medium': int(risk_counter.get('medium', 0)),
+        'general': int(risk_counter.get(GENERAL_RISK_LEVEL, 0)),
+    }
+    unknown_total = sum(
+        count for level, count in risk_counter.items()
+        if level not in risk_summary
+    )
+    risk_summary['unknown'] = int(unknown_total)
+
+    return {
+        'top_keywords': top_keywords,
+        'risk_summary': risk_summary,
+        'user_progress': user_progress,
+    }
+
+
+@limiter.limit('20 per minute')
+@app.route('/api/dashboard/insights', methods=['GET'])
+def get_dashboard_insights():
+    """Summarise conversation and risk insights for care teams."""
+    try:
+        user_limit = request.args.get('limit', default=10, type=int) or 10
+        lookback_days = request.args.get('lookback_days', default=30, type=int) or 30
+        keyword_limit = request.args.get('keyword_limit', default=10, type=int) or 10
+
+        user_limit = max(1, min(user_limit, 100))
+        lookback_days = max(1, min(lookback_days, 180))
+        keyword_limit = max(1, min(keyword_limit, 50))
+
+        progress_metrics = _collect_dashboard_progress_metrics(
+            lookback_days=lookback_days,
+            per_user_limit=5,
+            keyword_limit=keyword_limit,
+        )
+
+        overview_raw = db.get_dashboard_overview() or {}
+        overview = {
+            'total_conversations': int(overview_raw.get('total_conversations', 0) or 0),
+            'unique_users': int(overview_raw.get('unique_users', 0) or 0),
+            'important_messages': int(overview_raw.get('important_messages', 0) or 0),
+        }
+
+        try:
+            followup_result = db_manager.execute_query(
+                'SELECT COUNT(*) FROM follow_ups WHERE status != %s',
+                ('completed',),
+            )
+            active_followups = int(followup_result[0][0]) if followup_result else 0
+        except Exception as exc:
+            logging.warning('Could not fetch follow-up metrics: %s', exc)
+            active_followups = 0
+        overview['active_follow_ups'] = active_followups
+
+        user_summaries = db.get_recent_user_summaries(limit=user_limit) or []
+        user_progress_map = progress_metrics.get('user_progress', {})
+        formatted_users: List[Dict[str, Any]] = []
+
+        for summary in user_summaries:
+            formatted = dict(summary)
+            parsed = _parse_progress_timestamp(formatted.get('last_interaction'))
+            if parsed:
+                formatted['last_interaction'] = parsed.isoformat()
+
+            total_messages = int(formatted.get('total_messages') or 0)
+            important_messages = int(formatted.get('important_messages') or 0)
+            total_tokens = int(formatted.get('total_tokens') or 0)
+
+            formatted['total_messages'] = total_messages
+            formatted['important_messages'] = important_messages
+            formatted['total_tokens'] = total_tokens
+            formatted['important_ratio'] = (
+                round(important_messages / total_messages, 3)
+                if total_messages else 0.0
+            )
+            formatted['recent_risk_events'] = user_progress_map.get(
+                formatted.get('user_id'), []
+            )
+
+            formatted_users.append(formatted)
+
+        total_users = len(formatted_users)
+        total_messages_all = sum(user['total_messages'] for user in formatted_users)
+        important_messages_all = sum(user['important_messages'] for user in formatted_users)
+        total_tokens_all = sum(user['total_tokens'] for user in formatted_users)
+        high_focus_users = sum(
+            1 for user in formatted_users
+            if user.get('important_ratio', 0) >= 0.4
+        )
+        growth_watch_users = sum(
+            1 for user in formatted_users
+            if 0.15 <= user.get('important_ratio', 0) < 0.4
+        )
+        monitor_users = max(total_users - high_focus_users - growth_watch_users, 0)
+        returning_users = sum(1 for user in formatted_users if user['total_messages'] >= 10)
+        deep_conversation_users = sum(
+            1 for user in formatted_users
+            if user['total_tokens'] >= 2000
+        )
+        avg_messages_per_user = (
+            round(total_messages_all / total_users, 1)
+            if total_users
+            else 0.0
+        )
+        avg_tokens_per_message = (
+            round(total_tokens_all / total_messages_all, 2)
+            if total_messages_all
+            else 0.0
+        )
+        important_share = (
+            round(important_messages_all / total_messages_all, 3)
+            if total_messages_all
+            else 0.0
+        )
+
+        trend_window = min(max(lookback_days, 7), 30)
+        daily_totals = db.get_recent_daily_message_totals(days=trend_window) or []
+
+        infographic = {
+            'engagement': {
+                'active_users': total_users,
+                'returning_users': returning_users,
+                'avg_messages_per_user': avg_messages_per_user,
+                'high_focus_users': high_focus_users,
+                'growth_watch_users': growth_watch_users,
+                'monitor_users': monitor_users,
+            },
+            'quality': {
+                'important_message_share': important_share,
+                'avg_tokens_per_message': avg_tokens_per_message,
+                'deep_conversation_users': deep_conversation_users,
+                'active_follow_ups': overview.get('active_follow_ups', 0),
+            },
+            'message_trend': daily_totals,
+        }
+
+        risk_summary = progress_metrics.get('risk_summary', {
+            'high': 0,
+            'medium': 0,
+            'general': 0,
+            'unknown': 0,
+        })
+
+        response_payload = {
+            'generated_at': datetime.now().isoformat(),
+            'parameters': {
+                'user_limit': user_limit,
+                'lookback_days': lookback_days,
+                'keyword_limit': keyword_limit,
+            },
+            'overview': overview,
+            'risk_summary': risk_summary,
+            'top_keywords': progress_metrics.get('top_keywords', []),
+            'infographic': infographic,
+            'users': formatted_users,
+        }
+        return jsonify(response_payload)
+
+    except Exception as exc:
+        logging.error('Error generating dashboard insights: %s', exc, exc_info=True)
+        return jsonify({
+            'error': 'dashboard_generation_failed',
+            'message': 'Dashboard insights are unavailable at the moment.',
+        }), 500
+
+@limiter.limit('30 per minute')
+@app.route('/api/dashboard/users/<user_id>/history', methods=['GET'])
+def get_dashboard_user_history(user_id: str):
+    """Return conversation transcript and risk highlights for a dashboard drill-down."""
+    if not user_id:
+        return jsonify({'error': 'missing_user_id'}), 400
+
+    limit = request.args.get('limit', default=50, type=int) or 50
+    limit = max(10, min(limit, 200))
+
+    try:
+        history = db.get_user_conversation_feed(user_id, limit=limit) or []
+        summary = db.get_user_snapshot(user_id) or {
+            'user_id': user_id,
+            'total_messages': 0,
+            'important_messages': 0,
+            'total_tokens': 0,
+            'important_ratio': 0.0,
+            'last_interaction': None,
+            'first_interaction': None,
+        }
+        if summary.get('user_id') is None:
+            summary['user_id'] = user_id
+
+        risk_events: List[Dict[str, Any]] = []
+        if redis_client is not None:
+            raw_events = redis_client.lrange(f"progress:{user_id}", 0, limit - 1)
+            for raw in raw_events:
+                try:
+                    event = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+
+                timestamp = _parse_progress_timestamp(event.get('timestamp'))
+                normalized_level = normalize_risk_level(event.get('risk_level'))
+                risk_events.append({
+                    'timestamp': timestamp.isoformat() if timestamp else event.get('timestamp'),
+                    'risk_level': normalized_level,
+                    'keywords': event.get('keywords') or [],
+                })
+
+        response_payload = {
+            'generated_at': datetime.now().isoformat(),
+            'user_id': user_id,
+            'summary': summary,
+            'history': history,
+            'risk_events': risk_events,
+            'limit': limit,
+        }
+        return jsonify(response_payload)
+    except Exception as exc:
+        logging.error('Error retrieving dashboard user history for %s: %s', user_id, exc, exc_info=True)
+        return jsonify({
+            'error': 'user_history_unavailable',
+            'message': 'ไม่สามารถดึงประวัติการสนทนาได้ในขณะนี้',
+        }), 500
+
+
+# Health check endpoint
+@app.route('/health', methods=['GET'])
+def health_check():
+    """
+    Health check endpoint for monitoring
+    """
+    try:
+        health_status = {
+            'status': 'healthy',
+            'timestamp': datetime.now().isoformat(),
+            'services': {
+                'database': 'unknown',
+                'redis': 'unknown',
+                'xai_api': 'unknown'
+            }
+        }
+        
+        # Check database
+        try:
+            if db_manager and db_manager.check_connection():
+                health_status['services']['database'] = 'healthy'
+            else:
+                health_status['services']['database'] = 'unhealthy'
+                health_status['status'] = 'degraded'
+        except Exception as e:
+            health_status['services']['database'] = f'error: {str(e)[:50]}'
+            health_status['status'] = 'degraded'
+        
+        # Check Redis
+        try:
+            redis_client.ping()
+            health_status['services']['redis'] = 'healthy'
+        except Exception as e:
+            health_status['services']['redis'] = f'error: {str(e)[:50]}'
+            health_status['status'] = 'degraded'
+        
+        # Check xAI API (simple check)
+        try:
+            # This is a lightweight check - we don't actually call the API
+            if config.XAI_API_KEY:
+                health_status['services']['xai_api'] = 'configured'
+            else:
+                health_status['services']['xai_api'] = 'not_configured'
+        except Exception as e:
+            health_status['services']['xai_api'] = f'error: {str(e)[:50]}'
+        
+        # Determine overall status code
+        if health_status['status'] == 'healthy':
+            return jsonify(health_status), 200
+        else:
+            return jsonify(health_status), 503
+            
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
 
 def chunk_conversation_history(history, chunk_size=10):
     """
@@ -192,16 +609,16 @@ def summarize_conversation_chunk(chunk):
         for _, msg, resp in chunk:
             summary_prompt += f"\nผู้ใช้: {msg}\nบอท: {resp}\n"
 
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        text = grok_client.send_chat(
             messages=[
                 SYSTEM_MESSAGES,
                 {"role": "user", "content": summary_prompt}
             ],
-            **SUMMARY_GENERATION_CONFIG
+            model=config.XAI_MODEL,
+            **SUMMARY_GENERATION_CONFIG,
         )
 
-        return response.choices[0].message.content
+        return text
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดใน summarize_conversation_chunk: {str(e)}")
         return ""
@@ -262,7 +679,8 @@ def process_and_optimize_history(user_id, max_tokens=85000):
         # เพิ่มสรุปทั้งหมด
         if summaries:
             combined_summary = "\n\n".join(summaries)
-            optimized_history.append({"role": "assistant", "content": f"สรุปการสนทนาก่อนหน้า: {combined_summary}"})
+            # ใช้ role พิเศษสำหรับการสรุปที่ไม่แสดงให้ผู้ใช้เห็น
+            optimized_history.append({"role": "system_summary", "content": f"สรุปการสนทนาก่อนหน้า: {combined_summary}"})
 
         # เพิ่มข้อความสำคัญ
         optimized_history.extend(important_messages)
@@ -281,6 +699,51 @@ def process_and_optimize_history(user_id, max_tokens=85000):
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการปรับปรุงประวัติ: {str(e)}")
         return get_chat_session(user_id)  # ส่งคืนประวัติปกติในกรณีที่มีข้อผิดพลาด
+
+@safe_api_call
+def filter_messages_for_api(messages):
+    """
+    กรองข้อความที่มี role เป็น 'system_summary' ออกจากการส่งไปยัง API
+    แต่ยังคงไว้ในระบบเพื่อให้ AI เข้าใจบริบท
+    
+    Args:
+        messages (list): รายการข้อความ
+        
+    Returns:
+        list: ข้อความที่กรองแล้ว
+    """
+    filtered_messages = []
+    summary_content = ""
+    
+    for message in messages:
+        if message.get('role') == 'system_summary':
+            # เก็บเนื้อหาสรุปแต่ไม่ส่งไปยัง API
+            summary_content += message.get('content', '') + "\n\n"
+        else:
+            filtered_messages.append(message)
+    
+    # ถ้ามีการสรุป ให้รวมเข้ากับ system message เพื่อให้ AI เข้าใจบริบท
+    if summary_content.strip():
+        # ค้นหา system message ที่มีอยู่แล้ว
+        system_msg_found = False
+        for i, msg in enumerate(filtered_messages):
+            if msg.get('role') == 'system':
+                # เพิ่มการสรุปเข้าใน system message ที่มีอยู่
+                filtered_messages[i] = {
+                    'role': 'system',
+                    'content': msg.get('content', '') + "\n\nข้อมูลสำคัญเพิ่มเติม (สำหรับ AI เท่านั้น):\n" + summary_content.strip()
+                }
+                system_msg_found = True
+                break
+        
+        # ถ้าไม่มี system message ให้เพิ่มใหม่
+        if not system_msg_found:
+            filtered_messages.insert(0, {
+                'role': 'system',
+                'content': "ข้อมูลสำคัญเพิ่มเติม (สำหรับ AI เท่านั้น):\n" + summary_content.strip()
+            })
+    
+    return filtered_messages
 
 @safe_api_call
 def summarize_conversation_history(history):
@@ -318,16 +781,16 @@ def summarize_conversation_history(history):
         for _, msg, resp in history:
             summary_prompt += f"\nผู้ใช้: {msg}\nบอท: {resp}\n"
 
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        text = grok_client.send_chat(
             messages=[
                 SYSTEM_MESSAGES,
                 {"role": "user", "content": summary_prompt}
             ],
-            **SUMMARY_GENERATION_CONFIG
+            model=config.XAI_MODEL,
+            **SUMMARY_GENERATION_CONFIG,
         )
 
-        return response.choices[0].message.content
+        return text
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดใน summarize_conversation_history: {str(e)}")
         return ""
@@ -371,17 +834,17 @@ def summarize_by_topic(history):
         topic_prompt = topic_prompt.format(conversation=conversation_text)
 
         # ส่งไปให้ AI ประมวลผล
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        text = grok_client.send_chat(
             messages=[
                 SYSTEM_MESSAGES,
                 {"role": "user", "content": topic_prompt}
             ],
-            temperature=0.2,  # ลดความสร้างสรรค์เพื่อให้ได้ผลลัพธ์ที่เป็นระเบียบ
-            max_tokens=800
+            model=config.XAI_MODEL,
+            temperature=0.2,
+            max_tokens=800,
         )
 
-        return response.choices[0].message.content
+        return text
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดใน summarize_by_topic: {str(e)}")
         return ""
@@ -719,7 +1182,7 @@ def check_and_send_follow_ups():
                 user_id = user_id.decode('utf-8')
 
             # สร้างข้อความติดตามที่เป็นไปตามบริบทของการสนทนา
-            follow_up_message = generate_contextual_followup_message(user_id, db, deepseek_client, config)
+            follow_up_message = generate_contextual_followup_message(user_id, db, config)
             try:
                 line_bot_api.push_message(
                     user_id,
@@ -756,38 +1219,41 @@ def send_processing_status(user_id, reply_token):
         logging.error(f"เกิดข้อผิดพลาดในการส่งสถานะประมวลผล: {str(e)}")
         return False
 
-def send_final_response(user_id, bot_response):
-    """ส่งคำตอบสุดท้ายหลังประมวลผลเสร็จ
-
-    แบ่งคำตอบออกเป็นหลายข้อความเมื่อมีสัญลักษณ์หัวข้อหรือบรรทัดว่างสองบรรทัด
-    เพื่อให้แต่ละหัวข้อแสดงเป็นบับเบิลแยกบน LINE
-    หากมีมากกว่า 5 ข้อความ จะส่งเป็นหลายครั้ง
-    """
+def send_final_response(user_id, bot_response, reply_token=None):
+    """ส่งคำตอบสุดท้ายหลังประมวลผลเสร็จ พร้อมรองรับการ reply"""
     try:
-        # แยกข้อความด้วยตัวแบ่งหัวข้อ (•) หรือบรรทัดว่างอย่างน้อย 2 บรรทัด
+        text = bot_response or ""
         segments = [
-            seg.strip() for seg in re.split(r"\n{2,}|•", bot_response) if seg.strip()
+            seg.strip() for seg in re.split(r"\n{2,}|•", text) if seg.strip()
         ]
-        
-        # ตรวจสอบจำนวน segments
-        if not segments:
-            # ถ้าไม่มี segments ให้ส่งข้อความเดิม
-            messages = [TextSendMessage(text=bot_response)]
-            line_bot_api.push_message(user_id, messages)
-        elif len(segments) <= 5:
-            # จำนวน segments อยู่ในขอบเขตที่อนุญาต (1-5)
+
+        if segments:
             messages = [TextSendMessage(text=segment) for segment in segments]
-            line_bot_api.push_message(user_id, messages)
         else:
-            # ถ้าเกิน 5 segments ให้แบ่งส่งเป็นหลายครั้ง
-            for i in range(0, len(segments), 5):
-                batch = segments[i:i+5]
-                messages = [TextSendMessage(text=segment) for segment in batch]
-                line_bot_api.push_message(user_id, messages)
-                # หน่วงเวลาเล็กน้อยระหว่างการส่งแต่ละครั้ง เพื่อไม่ให้ส่งพร้อมกัน
-                if i + 5 < len(segments):
-                    time.sleep(0.5)
-        
+            messages = [TextSendMessage(text=text)]
+
+        to_push = messages
+
+        if reply_token:
+            reply_batch = messages[:5]
+            try:
+                if reply_batch:
+                    payload = reply_batch if len(reply_batch) > 1 else reply_batch[0]
+                    line_bot_api.reply_message(reply_token, payload)
+                    to_push = messages[5:]
+            except LineBotApiError as exc:
+                logging.warning(f"Reply message failed for user {user_id}: {exc}")
+                to_push = messages
+
+        for index in range(0, len(to_push), 5):
+            batch = to_push[index:index + 5]
+            if not batch:
+                continue
+            payload = batch if len(batch) > 1 else batch[0]
+            line_bot_api.push_message(user_id, payload)
+            if index + 5 < len(to_push):
+                time.sleep(0.5)
+
         return True
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการส่งคำตอบสุดท้าย: {str(e)}")
@@ -839,7 +1305,7 @@ def start_loading_animation(user_id, duration=60):
 @safe_api_call
 def summarize_form_data(form_data):
     """
-    สรุปข้อมูลจาก Google Form โดยใช้ DeepSeek AI
+    สรุปข้อมูลจาก Google Form โดยใช้ xAI Grok
     
     Args:
         form_data (dict): ข้อมูลจาก Google Form
@@ -881,21 +1347,19 @@ def summarize_form_data(form_data):
 โปรดสรุปให้กระชับ ชัดเจน และเป็นประโยชน์ต่อการให้คำปรึกษา
 """
         
-        # เรียก DeepSeek API
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        # เรียก xAI Grok API
+        summary = grok_client.send_chat(
             messages=[
                 {
-                    "role": "system", 
-                    "content": "คุณคือผู้เชี่ยวชาญด้านการบำบัดสารเสพติด ช่วยสรุปข้อมูลผู้ใช้อย่างเป็นมืออาชีพ"
+                    "role": "system",
+                    "content": "คุณคือผู้เชี่ยวชาญด้านการบำบัดสารเสพติด ช่วยสรุปข้อมูลผู้ใช้อย่างเป็นมืออาชีพ",
                 },
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt},
             ],
-            temperature=0.3,  # ใช้ค่าต่ำเพื่อความแม่นยำ
-            max_tokens=1000
+            model=config.XAI_MODEL,
+            temperature=0.3,
+            max_tokens=1000,
         )
-        
-        summary = response.choices[0].message.content
         return clean_ai_response(summary)
         
     except Exception as e:
@@ -957,6 +1421,8 @@ def process_conversation_data(user_id, user_message, bot_response, messages):
 
     # ตรวจสอบว่าข้อความนี้สำคัญหรือไม่
     is_important = is_important_message(user_message, bot_response)
+    if risk_level == GENERAL_RISK_LEVEL:
+        is_important = False
 
     # บันทึกการสนทนาและกำหนดการติดตาม
     save_chat_session(user_id, messages)
@@ -1025,36 +1491,39 @@ def handle_locked_user(user_id):
 
 # ฟังก์ชันสำหรับประมวลผลข้อความของผู้ใช้
 def process_user_message(user_id, user_message, reply_token):
-    """ประมวลผลข้อความผู้ใช้พร้อมภาพเคลื่อนไหวและการจัดการเซสชัน"""
+    """ประมวลผลข้อความผู้ใช้พร้อมจัดการสถานะและการตอบกลับ"""
     start_time = time.time()
     redis_client.delete(f"wait_notice:{user_id}")
 
-    # เริ่มภาพเคลื่อนไหวการโหลด
-    animation_success, _ = start_loading_animation(user_id)
-
-    # ตรวจสอบการหมดเวลาเซสชัน
     if check_session_timeout(user_id):
-        send_session_timeout_message(user_id)
+        send_session_timeout_message(user_id, reply_token=reply_token)
         return
 
-    # อัพเดทกิจกรรมล่าสุดของผู้ใช้
     update_last_activity(user_id)
 
-    # ตรวจสอบและจัดการคำสั่ง
     if user_message.startswith('/'):
-        handle_command_with_processing(user_id, user_message)
-        return
+        if handle_command_with_processing(user_id, user_message, reply_token=reply_token):
+            return
 
-    # ตรวจสอบคำสอบถามเกี่ยวกับสถานพยาบาล
     if check_hospital_inquiry(user_message):
         hospital_response = get_hospital_information_message()
-        send_final_response(user_id, hospital_response)
+        send_final_response(user_id, hospital_response, reply_token=reply_token)
         return
 
-    # ประมวลผลกับ AI และส่งการตอบกลับ
-    process_ai_response_with_context(user_id, user_message, start_time, animation_success)
+    animation_success, _ = start_loading_animation(user_id)
+    if not animation_success and reply_token:
+        if send_processing_status(user_id, reply_token):
+            reply_token = None
 
-def process_ai_response_with_context(user_id: str, user_message: str, start_time: float, animation_success: bool):
+    process_ai_response_with_context(
+        user_id,
+        user_message,
+        start_time,
+        animation_success,
+        reply_token,
+    )
+
+def process_ai_response_with_context(user_id: str, user_message: str, start_time: float, animation_success: bool, reply_token: Optional[str]):
     """
     สร้างการตอบกลับ AI โดยใช้บริบทจาก form พร้อมการจัดการข้อผิดพลาดที่ดีขึ้น
     """
@@ -1083,7 +1552,7 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
             # ถ้าโทเค็นเกิน ใช้การจัดการแบบพิเศษ
             logging.info(f"โทเค็นเกินขีดจำกัดสำหรับผู้ใช้ {user_id}, ใช้การจัดการแบบไฮบริด")
             try:
-                messages = hybrid_context_management(user_id)
+                messages = hybrid_context_management(user_id, TOKEN_THRESHOLD)
                 # เพิ่มบริบทกลับเข้าไปถ้ามี
                 if user_context:
                     add_context_to_messages(messages, user_context)
@@ -1105,28 +1574,28 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
         
         while retry_count < max_retries and bot_response is None:
             try:
-                response = generate_ai_response_with_timeout(messages, timeout=30)
+                response_text = generate_ai_response_with_timeout(messages, timeout=30)
                 
-                if not response or not hasattr(response, 'choices') or not response.choices:
-                    raise ValueError("Invalid AI response structure")
+                if not response_text:
+                    raise ValueError("Empty AI response")
                 
-                bot_response = clean_ai_response(response.choices[0].message.content)
+                bot_response = clean_ai_response(response_text)
                 
                 if not bot_response or len(bot_response.strip()) == 0:
                     raise ValueError("Empty response from AI")
                     
                 break  # สำเร็จ
                 
-            except requests.exceptions.Timeout:
+            except requests.exceptions.Timeout as timeout_error:
                 retry_count += 1
                 if retry_count < max_retries:
                     logging.warning(f"AI API timeout (attempt {retry_count}/{max_retries})")
                     time.sleep(2 ** retry_count)  # Exponential backoff
                 else:
-                    raise ChatbotError(
+                    raise create_legacy_chatbot_error(
                         ErrorType.AI_API_ERROR,
                         "AI API timeout after all retries",
-                        e
+                        timeout_error
                     )
                     
             except RateLimitError as e:
@@ -1145,7 +1614,7 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
                 logging.error(f"AI API error (attempt {retry_count + 1}): {str(e)}")
                 retry_count += 1
                 if retry_count >= max_retries:
-                    raise ChatbotError(
+                    raise create_legacy_chatbot_error(
                         ErrorType.AI_API_ERROR,
                         f"AI API error after {max_retries} attempts",
                         e
@@ -1172,16 +1641,16 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
         
         # 9. ส่งการตอบกลับ
         try:
-            success = send_final_response(user_id, bot_response)
+            success = send_final_response(user_id, bot_response, reply_token=reply_token)
             if not success:
-                raise ChatbotError(
+                raise create_legacy_chatbot_error(
                     ErrorType.MESSAGE_SEND_ERROR,
                     "Failed to send response to user"
                 )
                 
             # ถ้าใช้ fallback หรือมี error แจ้งให้ผู้ใช้ทราบ
             if fallback_response or error_occurred:
-                send_system_notification(user_id, fallback_response, error_occurred)
+                send_system_notification(user_id, fallback_response is not None, error_occurred)
                 
         except Exception as e:
             logging.critical(f"ไม่สามารถส่งข้อความให้ผู้ใช้ {user_id}: {str(e)}")
@@ -1197,40 +1666,73 @@ def process_ai_response_with_context(user_id: str, user_message: str, start_time
         
     except ChatbotError as e:
         # จัดการ custom errors
-        handle_chatbot_error(e, user_id, user_message)
+        handle_chatbot_error(e, user_id, user_message, reply_token=reply_token)
         
     except Exception as e:
         # จัดการ unexpected errors
         logging.critical(f"Unexpected error in process_ai_response: {str(e)}", exc_info=True)
-        handle_unexpected_error(e, user_id, user_message)
+        handle_unexpected_error(e, user_id, user_message, reply_token=reply_token)
 
+
+
+def history_to_messages(history: List[Tuple], max_pairs: int = DB_RESTORE_MESSAGE_PAIRS) -> Tuple[List[Dict[str, str]], Set[int]]:
+    """Convert database conversation rows into chronological chat messages."""
+    if not history:
+        return [], set()
+
+    history_sorted = sorted(history, key=lambda item: item[0])
+    trimmed_history = history_sorted[-max_pairs:] if max_pairs else history_sorted
+    used_ids: Set[int] = {entry[0] for entry in trimmed_history if entry and len(entry) > 0}
+
+    messages: List[Dict[str, str]] = []
+    for _, user_msg, bot_resp in trimmed_history:
+        if user_msg:
+            messages.append({"role": "user", "content": user_msg})
+        if bot_resp:
+            messages.append({"role": "assistant", "content": bot_resp})
+
+    return messages, used_ids
 
 def prepare_conversation_messages(user_id: str, user_context: Optional[str]) -> List[Dict[str, str]]:
     """เตรียมข้อความสำหรับการสนทนา พร้อมจัดการข้อผิดพลาด"""
     try:
         session_token_count = get_session_token_count(user_id)
         logging.info(f"จำนวนโทเค็นปัจจุบัน: {session_token_count} (ผู้ใช้: {user_id})")
-        
+
         if session_token_count > TOKEN_THRESHOLD:
             raise TokenThresholdExceeded(f"Token count {session_token_count} exceeds threshold")
-        
-        # ดึงประวัติการสนทนา
+
         messages = get_chat_session(user_id) or []
-        
-        # เพิ่มประวัติจากฐานข้อมูลถ้าจำเป็น
+        used_history_ids: Set[int] = set()
+        history_for_summary: List[Tuple] = []
+
+        history_token_limit = 20000 if not messages else 10000
         try:
-            optimized_history = db.get_user_history(user_id, max_tokens=10000)
-            if optimized_history:
-                prepare_conversation_context(messages, optimized_history)
+            history_for_summary = db.get_user_history(user_id, max_tokens=history_token_limit) or []
         except Exception as e:
             logging.warning(f"ไม่สามารถโหลดประวัติจากฐานข้อมูล: {str(e)}")
-        
-        # เพิ่มบริบทถ้ามี
+            history_for_summary = []
+
+        if not messages and history_for_summary:
+            restored_messages, used_history_ids = history_to_messages(history_for_summary, max_pairs=DB_RESTORE_MESSAGE_PAIRS)
+            if restored_messages:
+                messages = restored_messages
+                try:
+                    save_chat_session(user_id, messages)
+                    logging.info(f"กู้คืนประวัติการสนทนาจากฐานข้อมูลสำหรับผู้ใช้ {user_id}: {len(messages)} ข้อความ")
+                except Exception as store_error:
+                    logging.warning(f"ไม่สามารถบันทึกเซสชันที่กู้คืนสำหรับผู้ใช้ {user_id}: {store_error}")
+        elif history_for_summary:
+            _, used_history_ids = history_to_messages(history_for_summary, max_pairs=DB_RESTORE_MESSAGE_PAIRS)
+
+        if history_for_summary:
+            prepare_conversation_context(messages, history_for_summary, used_history_ids)
+
         if user_context:
             add_context_to_messages(messages, user_context)
-            
+
         return messages
-        
+
     except Exception as e:
         logging.error(f"Error in prepare_conversation_messages: {str(e)}")
         raise
@@ -1261,24 +1763,65 @@ def create_minimal_session(user_context: Optional[str]) -> List[Dict[str, str]]:
     return messages
 
 
-def generate_ai_response_with_timeout(messages: List[Dict[str, str]], timeout: int = 30):
-    """เรียก AI API พร้อม timeout"""
-    # ใช้ threading หรือ asyncio สำหรับ timeout
+def generate_ai_response_with_timeout(messages: List[Dict[str, str]], timeout: int = 30) -> str:
+    """เรียก xAI Grok API พร้อม timeout และคืนข้อความตอบกลับ"""
     import concurrent.futures
-    
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(
-            deepseek_client.chat.completions.create,
-            model=config.DEEPSEEK_MODEL,
-            messages=[SYSTEM_MESSAGES] + messages,
-            **GENERATION_CONFIG
+
+    filtered_messages = filter_messages_for_api(messages)
+    effective_timeout = _calculate_adaptive_timeout(filtered_messages, base_timeout=timeout)
+
+    def _call() -> str:
+        return grok_client.send_chat(
+            messages=[SYSTEM_MESSAGES] + filtered_messages,
+            model=config.XAI_MODEL,
+            **GENERATION_CONFIG,
         )
-        
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(_call)
         try:
-            response = future.result(timeout=timeout)
-            return response
+            return future.result(timeout=effective_timeout)
         except concurrent.futures.TimeoutError:
-            raise requests.exceptions.Timeout(f"AI API timeout after {timeout} seconds")
+            raise requests.exceptions.Timeout(f"AI API timeout after {effective_timeout} seconds")
+
+
+def _calculate_adaptive_timeout(filtered_messages: List[Dict[str, str]], base_timeout: int = 30) -> int:
+    """คำนวณ timeout ตามขนาดข้อความเพื่อรองรับบริบทที่ยาวขึ้น"""
+    max_timeout = max(base_timeout, 120)
+
+    token_count = 0
+    char_count = 0
+
+    try:
+        payload = [SYSTEM_MESSAGES] + filtered_messages
+        if token_counter is not None:
+            token_count = token_counter.count_message_tokens(payload)
+    except Exception as token_error:
+        logging.debug(f"Adaptive timeout token count failed: {token_error}")
+
+    try:
+        char_count = sum(len(message.get('content', '')) for message in filtered_messages)
+    except Exception as length_error:
+        logging.debug(f"Adaptive timeout length calculation failed: {length_error}")
+
+    adaptive_timeout = base_timeout
+
+    if token_count > 1000:
+        extra_token_units = math.ceil((token_count - 1000) / 400)
+        adaptive_timeout += extra_token_units * 5
+
+    if char_count > 4000:
+        extra_length_units = math.ceil((char_count - 4000) / 2000)
+        adaptive_timeout += extra_length_units * 5
+
+    adaptive_timeout = max(base_timeout, min(adaptive_timeout, max_timeout))
+
+    logging.debug(
+        f"Adaptive timeout computed: base={base_timeout}s, tokens={token_count}, "
+        f"chars={char_count}, result={adaptive_timeout}s"
+    )
+
+    return adaptive_timeout
 
 
 def generate_fallback_response(user_message: str, user_context: Optional[str]) -> str:
@@ -1331,7 +1874,9 @@ def process_conversation_data_safely(user_id: str, user_message: str, bot_respon
             message_token_count = token_counter.count_tokens(user_message + bot_response)
             risk_level, keywords = assess_risk(user_message)
             is_important = is_important_message(user_message, bot_response)
-            
+            if risk_level == GENERAL_RISK_LEVEL:
+                is_important = False
+
             db.save_conversation(
                 user_id=user_id,
                 user_message=user_message,
@@ -1378,34 +1923,51 @@ def send_system_notification(user_id: str, used_fallback: bool, had_error: bool)
     threading.Thread(target=send_delayed, daemon=True).start()
 
 
-def handle_chatbot_error(error: ChatbotError, user_id: str, user_message: str):
-    """จัดการข้อผิดพลาดที่คาดการณ์ได้"""
-    logging.error(f"ChatbotError [{error.error_type.value}]: {error.message}")
+# Helper function to create legacy-compatible ChatbotError
+def create_legacy_chatbot_error(error_type: ErrorType, message: str, original_error: Optional[Exception] = None):
+    """Create ChatbotError compatible with legacy system"""
+    # Create a simple object that mimics the old ChatbotError for backward compatibility
+    class LegacyChatbotError(Exception):
+        def __init__(self, error_type: ErrorType, message: str, original_error: Optional[Exception] = None):
+            self.error_type = error_type
+            self.message = message
+            self.original_error = original_error
+            super().__init__(self.message)
     
-    # ส่งข้อความที่เหมาะสมตามประเภทข้อผิดพลาด
-    error_messages = {
-        ErrorType.AI_API_ERROR: "ขออภัยค่ะ ระบบ AI กำลังมีปัญหา กรุณาลองใหม่อีกครั้ง",
-        ErrorType.TOKEN_MANAGEMENT_ERROR: "กำลังจัดระเบียบข้อมูล กรุณารอสักครู่",
-        ErrorType.DATABASE_ERROR: "มีปัญหาในการบันทึกข้อมูล แต่เรายังคุยกันต่อได้ค่ะ",
-        ErrorType.MESSAGE_SEND_ERROR: "ไม่สามารถส่งข้อความได้ กรุณาตรวจสอบการเชื่อมต่อ"
-    }
-    
-    message = error_messages.get(
-        error.error_type, 
-        "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่"
-    )
-    
+    return LegacyChatbotError(error_type, message, original_error)
+
+
+def handle_chatbot_error(error: ChatbotError, user_id: str, user_message: str, reply_token: Optional[str] = None):
+    """จัดการข้อผิดพลาดที่คาดการณ์ได้ - compatible with both legacy and new error systems"""
+
+    if hasattr(error, 'error_type'):
+        logging.error(f"ChatbotError [Legacy-{error.error_type.value}]: {error.message}")
+
+        error_messages = {
+            ErrorType.AI_API_ERROR: "ขออภัยค่ะ ระบบ AI กำลังมีปัญหา กรุณาลองใหม่อีกครั้ง",
+            ErrorType.TOKEN_MANAGEMENT_ERROR: "กำลังจัดระเบียบข้อมูล กรุณารอสักครู่",
+            ErrorType.DATABASE_ERROR: "มีปัญหาในการบันทึกข้อมูล แต่เรายังคุยกันต่อได้ค่ะ",
+            ErrorType.MESSAGE_SEND_ERROR: "ไม่สามารถส่งข้อความได้ กรุณาตรวจสอบการเชื่อมต่อ",
+        }
+
+        message = error_messages.get(
+            error.error_type,
+            "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่",
+        )
+    else:
+        logging.error(f"ChatbotError [{error.category.value}-{error.severity.value}]: {error.message}")
+        message = error.user_message or "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่"
+
     try:
-        send_final_response(user_id, message)
-    except:
-        # ถ้าส่งไม่ได้จริงๆ บันทึก log
+        send_final_response(user_id, message, reply_token=reply_token)
+    except Exception:
         logging.critical(f"Cannot send error message to user {user_id}")
 
 
-def handle_unexpected_error(error: Exception, user_id: str, user_message: str):
+def handle_unexpected_error(error: Exception, user_id: str, user_message: str, reply_token: Optional[str] = None):
     """จัดการข้อผิดพลาดที่ไม่คาดคิด"""
     error_id = f"ERR_{datetime.now().strftime('%Y%m%d%H%M%S')}_{user_id[:8]}"
-    
+
     logging.critical(
         f"Unexpected error {error_id}:\n"
         f"User: {user_id}\n"
@@ -1413,19 +1975,17 @@ def handle_unexpected_error(error: Exception, user_id: str, user_message: str):
         f"Error: {str(error)}\n"
         f"Traceback: {traceback.format_exc()}"
     )
-    
-    # บันทึกข้อผิดพลาดสำหรับการวิเคราะห์
+
     save_error_for_analysis(error_id, user_id, user_message, error)
-    
-    # ส่งข้อความให้ผู้ใช้
+
     try:
         message = (
             "ขออภัยค่ะ เกิดข้อผิดพลาดที่ไม่คาดคิด\n"
             f"รหัสข้อผิดพลาด: {error_id}\n\n"
             "กรุณาลองใหม่อีกครั้ง หรือติดต่อผู้ดูแลระบบ"
         )
-        send_final_response(user_id, message)
-    except:
+        send_final_response(user_id, message, reply_token=reply_token)
+    except Exception:
         pass
 
 
@@ -1529,19 +2089,30 @@ def send_rate_limit_notification(user_id: str, wait_time: int):
         pass  # ถ้าส่งไม่ได้ก็ไม่เป็นไร
 
 
-def prepare_conversation_context(messages, optimized_history):
-    """เตรียมบริบทการสนทนาโดยใช้ประวัติ"""
-    # ตรวจสอบว่า optimized_history เป็น None หรือไม่
-    if optimized_history is None:
-        # ถ้าเป็น None ให้ใช้ list ว่าง
-        optimized_history = []
+def prepare_conversation_context(messages, optimized_history, used_history_ids: Optional[Set[int]] = None):
+    """Prepare conversation context by using stored history."""
+    optimized_history = optimized_history or []
+    used_history_ids = used_history_ids or set()
 
-    if len(optimized_history) > 5:
-        summary = summarize_conversation_history(optimized_history[5:])
-        if summary:
-            messages.append({"role": "assistant", "content": f"สรุปการสนทนาก่อนหน้า: {summary}"})
+    if not optimized_history:
+        return
 
-def send_session_timeout_message(user_id):
+    history_sorted = sorted(optimized_history, key=lambda item: item[0])
+    if used_history_ids:
+        history_for_summary = [entry for entry in history_sorted if entry[0] not in used_history_ids]
+    else:
+        history_for_summary = history_sorted[5:]
+
+    if not history_for_summary:
+        return
+
+    summary = summarize_conversation_history(history_for_summary)
+    if summary:
+        messages[:] = [msg for msg in messages if msg.get('role') != 'system_summary']
+        messages.append({"role": "system_summary", "content": "สรุปการสนทนาก่อนหน้า: " + summary})
+
+
+def send_session_timeout_message(user_id, reply_token=None):
     """ส่งข้อความเซสชันหมดอายุ"""
     welcome_back = (
         "สวัสดีค่ะ ยินดีต้อนรับกลับมา 👋\n\n"
@@ -1551,39 +2122,41 @@ def send_session_timeout_message(user_id):
         "💡 ต้องการคำแนะนำเพิ่มเติม พิมพ์: /help\n\n"
         "คุณต้องการพูดคุยเกี่ยวกับเรื่องอะไรดีคะวันนี้?"
     )
-    send_final_response(user_id, welcome_back)
+    send_final_response(user_id, welcome_back, reply_token=reply_token)
 
-def handle_command_with_processing(user_id, command):
-    """จัดการคำสั่งพร้อมแสดงสถานะประมวลผล"""
 
-    # ตรวจสอบคำสั่ง verify
-    if command.startswith('/verify'):
-        # ตรวจสอบว่าผู้ใช้ลงทะเบียนแล้วหรือไม่
+def handle_command_with_processing(user_id, command, reply_token=None):
+    """จัดการคำสั่งและส่งผลลัพธ์กลับไปยังผู้ใช้ หากจัดการได้จะคืน True"""
+    normalized = command.strip()
+
+    if normalized.startswith('/verify'):
         if is_user_registered(user_id):
             send_final_response(
                 user_id,
                 "✅ คุณได้ลงทะเบียนและยืนยันตัวตนเรียบร้อยแล้ว\n"
                 "ไม่จำเป็นต้องยืนยันอีกครั้ง คุณสามารถใช้บริการของน้องใจดีได้ตามปกติ\n\n"
-                "พิมพ์ /help เพื่อดูคำสั่งและบริการที่มี"
+                "พิมพ์ /help เพื่อดูคำสั่งและบริการที่มี",
+                reply_token=reply_token,
             )
-            return
+            return True
 
-        # ดำเนินการต่อสำหรับผู้ที่ยังไม่ได้ลงทะเบียน
-        parts = command.split()
+        parts = normalized.split()
         if len(parts) != 2:
-            send_final_response(user_id, "รูปแบบไม่ถูกต้อง กรุณาพิมพ์ \"/verify\" ตามด้วยรหัส 6 หลัก เช่น \"/verify 123456\"")
-            return
+            send_final_response(
+                user_id,
+                "รูปแบบไม่ถูกต้อง กรุณาพิมพ์ \"/verify\" ตามด้วยรหัส 6 หลัก เช่น \"/verify 123456\"",
+                reply_token=reply_token,
+            )
+            return True
 
         confirmation_code = parts[1].strip()
         success, message = register_user_with_code(user_id, confirmation_code)
-        send_final_response(user_id, message)
-        return
-
-    animation_success, _ = start_loading_animation(user_id, duration=10)
+        send_final_response(user_id, message, reply_token=reply_token)
+        return True
 
     response_text = None
 
-    if command == '/reset':
+    if normalized == '/reset':
         db.clear_user_history(user_id)
         redis_client.delete(f"chat_session:{user_id}")
         redis_client.delete(f"session_tokens:{user_id}")
@@ -1596,24 +2169,22 @@ def handle_command_with_processing(user_id, command):
             "คุณต้องการพูดคุยเกี่ยวกับเรื่องอะไรดีคะ?"
         )
 
-    elif command == '/optimize':
-        # เพิ่มคำสั่งใหม่สำหรับการปรับประวัติการสนทนาโดยตรง
+    elif normalized == '/optimize':
         token_count_before = get_session_token_count(user_id)
-        hybrid_context_management(user_id)
+        hybrid_context_management(user_id, TOKEN_THRESHOLD)
         token_count_after = get_session_token_count(user_id)
 
         response_text = (
             f"🔄 ปรับปรุงประวัติการสนทนาเรียบร้อยแล้วค่ะ\n\n"
             f"จำนวนโทเค็น: {token_count_before} → {token_count_after} ({(token_count_before - token_count_after)} ลดลง)\n\n"
-            f"ประวัติการสนทนาสำคัญยังคงถูกเก็บไว้ และบอทยังเข้าใจบริบทการสนทนาของเรา\n"
-            f"เราสามารถสนทนาต่อได้ตามปกติค่ะ"
+            "ประวัติการสนทนาสำคัญยังคงถูกเก็บไว้ และบอทยังเข้าใจบริบทการสนทนาของเรา\n"
+            "เราสามารถสนทนาต่อได้ตามปกติค่ะ"
         )
 
-    elif command == '/tokens':
-        # เพิ่มคำสั่งสำหรับตรวจสอบจำนวนโทเค็นในเซสชัน
+    elif normalized == '/tokens':
         token_count = get_session_token_count(user_id)
         max_tokens = TOKEN_THRESHOLD
-        percentage = (token_count / max_tokens) * 100
+        percentage = (token_count / max_tokens) * 100 if max_tokens else 0
 
         response_text = (
             f"📊 สถิติการใช้โทเค็น\n\n"
@@ -1623,28 +2194,27 @@ def handle_command_with_processing(user_id, command):
             f"{'⚠️ ใกล้ถึงขีดจำกัด โปรดใช้ /optimize เพื่อปรับปรุงประวัติ' if percentage > 80 else '✅ อยู่ในเกณฑ์ปกติ'}"
         )
 
-    elif command == '/followup':
+    elif normalized == '/followup':
         response_text = get_follow_up_status(user_id)
 
-    elif command == '/help':
+    elif normalized == '/help':
         response_text = (
             "สวัสดีค่ะ 👋 ฉันคือน้องใจดี ผู้ช่วยดูแลและให้คำปรึกษาสำหรับผู้ที่ต้องการเลิกใช้สารเสพติด"
             "💬 ฉันสามารถช่วยคุณได้ดังนี้:\n"
             "- พูดคุยและให้กำลังใจในการเลิกใช้สารเสพติด\n"
-            "- ให้ข้อมูลเกี่ยวกับผลกระทบของสารเสพติดต่อร่างกายและจิตใจ\n"
-            "- แนะนำเทคนิคจัดการความอยากและความเครียด\n"
-            "📋 คำสั่งที่ใช้ได้:\n"
-            "🔑 /verify [รหัส] - ยืนยันการลงทะเบียนด้วยรหัสที่ได้จาก Google Form\n"
-            "📝 /register - ขอข้อมูลการลงทะเบียนและลิงก์กรอกแบบฟอร์ม\n"
-            "📊 /status - ดูสถิติการใช้งานและข้อมูลเซสชัน\n"
-            "📈 /progress - ดูรายงานความก้าวหน้าของคุณ\n"
-            "🔄 /optimize - ปรับปรุงประวัติการสนทนาให้มีประสิทธิภาพ\n"
-            "📈 /tokens - ตรวจสอบการใช้งานโทเค็นในเซสชันปัจจุบัน\n"
+            "- ให้คำปรึกษาเกี่ยวกับวิธีรับมือความอยากและอาการถอน\n"
+            "- ให้ข้อมูลเกี่ยวกับผลกระทบของสารเสพติดและการรักษา\n"
+            "- ติดตามความก้าวหน้าและให้คำแนะนำที่เหมาะสมกับคุณ\n\n"
+            "🛠️ คำสั่งที่มีให้ใช้:\n"
+            "📥 /register - วิธีลงทะเบียนใช้งาน\n"
+            "✅ /verify <รหัส> - ยืนยันตัวตนด้วยรหัส 6 หลัก\n"
+            "🧠 /optimize - ปรับปรุงประวัติการสนทนาให้มีประสิทธิภาพ\n"
+            "🪙 /tokens - ตรวจสอบการใช้งานโทเค็นในเซสชันปัจจุบัน\n"
+            "📊 /status - ดูสรุปสถานะการสนทนาและการใช้โทเค็น\n"
+            "📈 /progress - ดูรายงานความก้าวหน้าและแนวทางถัดไป\n"
             "📋 /context - ดูบริบทของคุณจากแบบประเมินที่กรอกไว้\n"
             "🔔 /followup - ตรวจสอบกำหนดการติดตามของคุณ\n"
             "🚨 /emergency - ดูข้อมูลติดต่อฉุกเฉินและสายด่วน\n"
-            "💬 /feedback - ส่งความคิดเห็นหรือรายงานปัญหา\n"
-            "🔄 /reset - ล้างประวัติการสนทนาและเริ่มต้นใหม่\n"
             "❓ /help - แสดงเมนูช่วยเหลือนี้\n\n"
             "💡 ตัวอย่างคำถามที่สามารถถามฉันได้:\n"
             "- \"ช่วยประเมินการใช้สารเสพติดของฉันหน่อย\"\n"
@@ -1658,7 +2228,7 @@ def handle_command_with_processing(user_id, command):
             "เริ่มพูดคุยกับฉันได้เลยนะคะ ฉันพร้อมรับฟังและช่วยเหลือคุณ 💚"
         )
 
-    elif command == '/status':
+    elif normalized == '/status':
         history_count = db.get_user_history_count(user_id)
         important_count = db.get_important_message_count(user_id)
         last_interaction = db.get_last_interaction(user_id)
@@ -1666,7 +2236,6 @@ def handle_command_with_processing(user_id, command):
         total_db_tokens = db.get_total_tokens(user_id) or 0
         session_tokens = get_session_token_count(user_id)
 
-        # อัพเดทข้อความสถานะพร้อมตัวเลขสำคัญ และชี้แจงความแตกต่าง
         response_text = (
             "📊 สถิติการสนทนาของคุณ\n"
             f"▫️ จำนวนการสนทนาที่บันทึก: {history_count} ครั้ง\n"
@@ -1675,14 +2244,14 @@ def handle_command_with_processing(user_id, command):
             f"▫️ สถานะเซสชันปัจจุบัน: {'🟢 กำลังสนทนาอยู่' if current_session else '🔴 ยังไม่เริ่มสนทนา'}\n\n"
             f"📝 สถิติโทเค็น\n"
             f"▫️ โทเค็นในเซสชันปัจจุบัน: {session_tokens:,}\n"
-            f"  (รวมทุกข้อความในบริบทปัจจุบัน)\n"
             f"▫️ โทเค็นในฐานข้อมูล: {total_db_tokens:,}\n"
-            f"  (ผลรวมของแต่ละข้อความที่บันทึก)\n\n"
+            "  (ผลรวมของแต่ละข้อความที่บันทึก)\n\n"
             "💚 น้องใจดีพร้อมให้คำปรึกษาและสนับสนุนคุณตลอดเส้นทางการเลิกสารเสพติด\n"
-            "💬 มีคำถามหรือต้องการความช่วยเหลือ เพียงพิมพ์บอกฉันได้เลยค่ะ"
+            "💬 มีคำถามหรือต้องการความช่วยเหลือ เพียงพิมพ์บอกฉันได้เลยค่ะ\n\n"
+            "ℹ️ เคล็ดลับ: ต้องการดูรายงานความก้าวหน้าของคุณ พิมพ์ /progress"
         )
 
-    elif command == '/emergency':
+    elif normalized == '/emergency':
         response_text = (
             "🚨 บริการช่วยเหลือฉุกเฉิน 🚨\n\n"
             "หากคุณหรือคนใกล้ตัวกำลังประสบปัญหาต่อไปนี้:\n"
@@ -1700,15 +2269,20 @@ def handle_command_with_processing(user_id, command):
             "💚 การขอความช่วยเหลือคือก้าวแรกของการดูแลตัวเอง"
         )
 
-    elif command == '/progress':
+    elif normalized == '/progress':
         report = generate_progress_report(user_id)
-        response_text = report if report else (
-            "📊 รายงานความก้าวหน้า\n\n"
-            "ยังไม่มีข้อมูลความก้าวหน้าเพียงพอสำหรับการวิเคราะห์\n\n"
-            "เมื่อเราพูดคุยกันมากขึ้น น้องใจดีจะสามารถติดตามและวิเคราะห์ความก้าวหน้าของคุณได้"
+        response_text = (
+            f"{report}\n\nℹ️ เคล็ดลับ: ต้องการดูสรุปสถานะการสนทนาปัจจุบัน พิมพ์ /status"
+            if report else
+            (
+                "📊 รายงานความก้าวหน้า\n\n"
+                "ยังไม่มีข้อมูลความก้าวหน้าเพียงพอสำหรับการวิเคราะห์\n\n"
+                "เมื่อเราพูดคุยกันมากขึ้น น้องใจดีจะสามารถติดตามและวิเคราะห์ความก้าวหน้าของคุณได้\n\n"
+                "ℹ️ เคล็ดลับ: ดูสรุปสถานะล่าสุดด้วย /status"
+            )
         )
 
-    elif command == '/register':
+    elif normalized == '/register':
         response_text = (
             "📝 การลงทะเบียนใช้งานน้องใจดี\n\n"
             "เพื่อเริ่มใช้งาน คุณจำเป็นต้องลงทะเบียนก่อน โดยทำตามขั้นตอนดังนี้:\n\n"
@@ -1717,11 +2291,9 @@ def handle_command_with_processing(user_id, command):
             "3. นำรหัสมาพิมพ์ที่นี่ด้วยคำสั่ง \"/verify รหัส\" เช่น \"/verify 123456\"\n\n"
             "หากมีปัญหาในการลงทะเบียน คุณสามารถติดต่อเจ้าหน้าที่ได้ที่ support@example.com"
         )
-        
-    elif command == '/context':
-        # คำสั่งใหม่: ดูบริบทจากแบบประเมิน
+
+    elif normalized == '/context':
         context = get_user_context(user_id)
-        
         if context:
             response_text = (
                 "📋 บริบทของคุณจากแบบประเมิน:\n\n"
@@ -1733,15 +2305,22 @@ def handle_command_with_processing(user_id, command):
                 "ไม่พบข้อมูลบริบทจากแบบประเมิน\n"
                 "อาจเป็นเพราะคุณลงทะเบียนก่อนที่ระบบจะมีฟีเจอร์นี้"
             )
-        
-        send_final_response(user_id, response_text)
-        return
+        send_final_response(user_id, response_text, reply_token=reply_token)
+        return True
 
     else:
-        response_text = "คำสั่งไม่ถูกต้อง ลองพิมพ์ /help เพื่อดูคำสั่งทั้งหมด"
+        send_final_response(
+            user_id,
+            "คำสั่งไม่ถูกต้องค่ะ ลองพิมพ์ /help เพื่อดูคำสั่งที่สามารถใช้ได้",
+            reply_token=reply_token,
+        )
+        return True
 
     if response_text:
-        send_final_response(user_id, response_text)
+        send_final_response(user_id, response_text, reply_token=reply_token)
+        return True
+
+    return False
 
 def handle_response_timing(start_time, animation_success):
     """จัดการเวลาในการตอบสนองเพื่อประสบการณ์ผู้ใช้ที่ดีขึ้น"""
@@ -1756,22 +2335,19 @@ def handle_response_timing(start_time, animation_success):
         time.sleep(5 - elapsed_time)
 
 @safe_api_call
-def generate_ai_response(messages):
-    """สร้างการตอบกลับด้วย AI โดยมีการจัดการข้อผิดพลาด"""
+def generate_ai_response(messages) -> str:
+    """สร้างการตอบกลับด้วย AI โดยมีการจัดการข้อผิดพลาด (xAI Grok)"""
     try:
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
-            messages=[SYSTEM_MESSAGES] + messages,
-            **GENERATION_CONFIG
+        filtered_messages = filter_messages_for_api(messages)
+        text = grok_client.send_chat(
+            messages=[SYSTEM_MESSAGES] + filtered_messages,
+            model=config.XAI_MODEL,
+            **GENERATION_CONFIG,
         )
-
-        # ตรวจสอบการตอบกลับเบื้องต้น
-        if not response or not hasattr(response, 'choices') or not response.choices:
-            logging.error("ได้รับการตอบกลับที่ไม่ถูกต้องจาก DeepSeek API")
-            raise ValueError("Invalid response from DeepSeek API")
-
-        return response
-
+        if not text:
+            logging.error("ได้รับการตอบกลับที่ไม่ถูกต้องจาก xAI Grok API")
+            raise ValueError("Invalid response from xAI Grok API")
+        return text
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการสร้างการตอบกลับ AI: {str(e)}")
         raise
@@ -1878,18 +2454,17 @@ def check_line_api_health():
     except Exception:
         return False
 
-def check_deepseek_api_health():
-    """ตรวจสอบการเชื่อมต่อ DeepSeek API"""
+def check_grok_api_health():
+    """ตรวจสอบการเชื่อมต่อ xAI Grok API"""
     try:
-        # Make a minimal API call to check connectivity
-        deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        _ = grok_client.send_chat(
             messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1
+            model=config.XAI_MODEL,
+            max_tokens=1,
         )
         return True
     except Exception as e:
-        logging.debug(f"DeepSeek API health check failed: {str(e)}")
+        logging.debug(f"xAI Grok API health check failed: {str(e)}")
         return False
 
 def get_uptime():
@@ -2023,6 +2598,19 @@ def handle_follow(event):
 # เริ่มต้นตัวกำหนดการ
 scheduler = BackgroundScheduler()
 
+def shutdown_scheduler(wait=True, reason="unknown"):
+    """�Դ��ǡ�˹���âͧ APScheduler ���ҧ��ʹ���"""
+    if not scheduler.running:
+        logging.debug(f"������ûԴ��ǡ�˹���� ({reason}): �ѧ����������������ش����")
+        return
+    try:
+        scheduler.shutdown(wait=wait)
+        logging.info(f"�Դ��ǡ�˹�������º���� ({reason})")
+    except SchedulerNotRunningError:
+        logging.debug(f"��ǡ�˹���ö١�Դ����� ({reason})")
+    except Exception as exc:
+        logging.error(f"�Դ��ͼԴ��Ҵ㹡�ûԴ��ǡ�˹���� ({reason}): {exc}")
+
 # เพิ่มงานตัวกำหนดการ
 def init_scheduler():
     scheduler.add_job(check_and_send_follow_ups, 'interval', minutes=30)
@@ -2050,13 +2638,11 @@ def handle_shutdown(sig=None, frame=None):
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการปิดการเชื่อมต่อ Redis: {str(e)}")
 
-    # ปิดการเชื่อมต่อ DeepSeek API
+    # ปิดการเชื่อมต่อ xAI Grok API (ไม่มีการเชื่อมต่อถาวรในปัจจุบัน)
     try:
-        if hasattr(async_deepseek, 'client') and async_deepseek.client:
-            asyncio.run(async_deepseek.close())
-        logging.info("ปิดการเชื่อมต่อ DeepSeek API เรียบร้อย")
+        logging.info("ปิดการเชื่อมต่อ xAI Grok API เรียบร้อย")
     except Exception as e:
-        logging.error(f"เกิดข้อผิดพลาดในการปิดการเชื่อมต่อ DeepSeek API: {str(e)}")
+        logging.error(f"เกิดข้อผิดพลาดในการปิดการเชื่อมต่อ xAI Grok API: {str(e)}")
 
     logging.info("ปิดแอปพลิเคชันเรียบร้อย")
     exit(0)

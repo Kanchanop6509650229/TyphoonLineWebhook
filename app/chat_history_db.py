@@ -1,7 +1,7 @@
 """
 โมดูลฐานข้อมูลประวัติการแชทสำหรับแชทบอท 'ใจดี'
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from typing import List, Tuple, Dict, Any, Optional, Union
 from .utils import safe_db_operation
@@ -72,6 +72,172 @@ class ChatHistoryDB:
             logging.error(f"Error retrieving user history: {str(e)}")
             # คืนค่ารายการว่างในกรณีที่มีข้อผิดพลาด
             return []
+
+
+    @safe_db_operation
+    def get_user_conversation_feed(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        '''Return most recent conversation entries for dashboard views.'''
+        limit = max(1, min(int(limit or 0), 200))
+        query = '''
+            SELECT
+                id,
+                timestamp,
+                user_message,
+                bot_response,
+                important_flag,
+                COALESCE(token_count, 0) AS token_count
+            FROM conversations
+            WHERE user_id = %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+        '''
+
+        try:
+            rows = self.db.execute_query(query, (user_id, limit))
+        except TypeError:
+            rows = self.db.execute_query(
+                query.replace('LIMIT %s', f'LIMIT {limit}'),
+                (user_id,)
+            )
+
+        history: List[Dict[str, Any]] = []
+        for row in rows or []:
+            if isinstance(row, dict):
+                timestamp = row.get('timestamp')
+                payload = {
+                    'id': row.get('id'),
+                    'timestamp': timestamp,
+                    'user_message': row.get('user_message'),
+                    'bot_response': row.get('bot_response'),
+                    'important': bool(row.get('important_flag')),
+                    'token_count': int(row.get('token_count') or 0),
+                }
+            else:
+                row_id, timestamp, user_msg, bot_resp, important, token_count = row
+                payload = {
+                    'id': row_id,
+                    'timestamp': timestamp,
+                    'user_message': user_msg,
+                    'bot_response': bot_resp,
+                    'important': bool(important),
+                    'token_count': int(token_count or 0),
+                }
+
+            if isinstance(payload['timestamp'], datetime):
+                payload['timestamp'] = payload['timestamp'].isoformat()
+
+            history.append(payload)
+
+        return history
+
+    @safe_db_operation
+    def get_user_snapshot(self, user_id: str) -> Optional[Dict[str, Any]]:
+        '''Collect aggregate metrics for a single user.'''
+        query = '''
+            SELECT
+                user_id,
+                COUNT(*) AS total_messages,
+                SUM(CASE WHEN important_flag THEN 1 ELSE 0 END) AS important_messages,
+                MAX(timestamp) AS last_interaction,
+                MIN(timestamp) AS first_interaction,
+                COALESCE(SUM(token_count), 0) AS total_tokens
+            FROM conversations
+            WHERE user_id = %s
+            GROUP BY user_id
+            LIMIT 1
+        '''
+
+        try:
+            rows = self.db.execute_query(query, (user_id,), dictionary=True)
+        except TypeError:
+            rows = self.db.execute_query(query.replace('LIMIT 1', 'LIMIT 1'), (user_id,))
+
+        if not rows:
+            return None
+
+        if isinstance(rows[0], dict):
+            data = dict(rows[0])
+        else:
+            result = rows[0]
+            data = {
+                'user_id': result[0],
+                'total_messages': result[1],
+                'important_messages': result[2],
+                'last_interaction': result[3],
+                'first_interaction': result[4],
+                'total_tokens': result[5],
+            }
+
+        total_messages = int(data.get('total_messages') or 0)
+        important_messages = int(data.get('important_messages') or 0)
+        total_tokens = int(data.get('total_tokens') or 0)
+
+        snapshot = {
+            'user_id': data.get('user_id'),
+            'total_messages': total_messages,
+            'important_messages': important_messages,
+            'total_tokens': total_tokens,
+            'important_ratio': round(important_messages / total_messages, 3) if total_messages else 0.0,
+        }
+
+        last_interaction = data.get('last_interaction')
+        first_interaction = data.get('first_interaction')
+
+        if isinstance(last_interaction, datetime):
+            snapshot['last_interaction'] = last_interaction.isoformat()
+        else:
+            snapshot['last_interaction'] = last_interaction
+
+        if isinstance(first_interaction, datetime):
+            snapshot['first_interaction'] = first_interaction.isoformat()
+        else:
+            snapshot['first_interaction'] = first_interaction
+
+        return snapshot
+
+    @safe_db_operation
+    def get_recent_daily_message_totals(self, days: int = 14) -> List[Dict[str, Any]]:
+        '''Aggregate conversation counts per day within a rolling window.'''
+        days = max(1, min(int(days or 0), 90))
+        cutoff = datetime.now() - timedelta(days=days - 1)
+
+        query = '''
+            SELECT
+                DATE(timestamp) AS day_value,
+                COUNT(*) AS total_messages,
+                SUM(CASE WHEN important_flag THEN 1 ELSE 0 END) AS important_messages,
+                COALESCE(SUM(token_count), 0) AS total_tokens
+            FROM conversations
+            WHERE timestamp >= %s
+            GROUP BY DATE(timestamp)
+            ORDER BY DATE(timestamp)
+        '''
+
+        rows = self.db.execute_query(query, (cutoff,))
+
+        totals: List[Dict[str, Any]] = []
+        for row in rows or []:
+            if isinstance(row, dict):
+                day_value = row.get('day_value') or row.get('date') or row.get('timestamp')
+                total_messages = row.get('total_messages')
+                important_messages = row.get('important_messages')
+                total_tokens = row.get('total_tokens')
+            else:
+                day_value, total_messages, important_messages, total_tokens = row
+
+            if isinstance(day_value, datetime):
+                day_str = day_value.date().isoformat()
+            else:
+                day_str = str(day_value) if day_value is not None else None
+
+            totals.append({
+                'date': day_str,
+                'total_messages': int(total_messages or 0),
+                'important_messages': int(important_messages or 0),
+                'total_tokens': int(total_tokens or 0),
+            })
+
+        return totals
 
     @safe_db_operation
     def save_conversation(self, user_id: str, user_message: str, bot_response: str,
@@ -331,3 +497,84 @@ class ChatHistoryDB:
         except Exception as e:
             logging.error(f"Error updating follow-up status: {str(e)}")
             raise
+
+    @safe_db_operation
+    def get_dashboard_overview(self) -> Dict[str, int]:
+        """Collect global conversation metrics for the practitioner dashboard."""
+        query = (
+            """
+            SELECT
+                COUNT(*) AS total_conversations,
+                COUNT(DISTINCT user_id) AS unique_users,
+                COALESCE(SUM(CASE WHEN important_flag THEN 1 ELSE 0 END), 0) AS important_messages
+            FROM conversations
+            """
+        )
+
+        try:
+            result = self.db.execute_query(query, dictionary=True)
+        except TypeError:
+            result = self.db.execute_query(query)
+            if result:
+                total_conversations, unique_users, important_messages = result[0]
+            else:
+                total_conversations = unique_users = important_messages = 0
+            return {
+                'total_conversations': int(total_conversations or 0),
+                'unique_users': int(unique_users or 0),
+                'important_messages': int(important_messages or 0),
+            }
+
+        row = (result or [{}])[0] if isinstance(result, list) else {}
+        return {
+            'total_conversations': int((row or {}).get('total_conversations', 0) or 0),
+            'unique_users': int((row or {}).get('unique_users', 0) or 0),
+            'important_messages': int((row or {}).get('important_messages', 0) or 0),
+        }
+
+    @safe_db_operation
+    def get_recent_user_summaries(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Return per-user conversation snapshots ordered by recency."""
+        query = (
+            """
+            SELECT
+                user_id,
+                COUNT(*) AS total_messages,
+                SUM(CASE WHEN important_flag THEN 1 ELSE 0 END) AS important_messages,
+                MAX(timestamp) AS last_interaction,
+                COALESCE(SUM(token_count), 0) AS total_tokens
+            FROM conversations
+            GROUP BY user_id
+            ORDER BY last_interaction DESC
+            LIMIT %s
+            """
+        )
+
+        try:
+            rows = self.db.execute_query(query, (limit,), dictionary=True)
+        except TypeError:
+            rows = self.db.execute_query(query.replace('%s', str(limit)))
+
+        summaries: List[Dict[str, Any]] = []
+        for row in rows or []:
+            if isinstance(row, dict):
+                data = row
+            else:
+                user_id, total_messages, important_messages, last_interaction, total_tokens = row
+                data = {
+                    'user_id': user_id,
+                    'total_messages': total_messages,
+                    'important_messages': important_messages,
+                    'last_interaction': last_interaction,
+                    'total_tokens': total_tokens,
+                }
+
+            summaries.append({
+                'user_id': data.get('user_id'),
+                'total_messages': int(data.get('total_messages') or 0),
+                'important_messages': int(data.get('important_messages') or 0),
+                'last_interaction': data.get('last_interaction'),
+                'total_tokens': int(data.get('total_tokens') or 0),
+            })
+
+        return summaries

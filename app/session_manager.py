@@ -42,15 +42,16 @@ def save_chat_session(user_id: str, messages: List[Dict[str, str]]) -> None:
             {"role": msg["role"], "content": msg["content"]}
             for msg in messages[-max_messages:]
         ]
+        ttl_seconds = max(int(SESSION_TIMEOUT or 0), 60)
         redis_client.setex(
             f"chat_session:{user_id}",
-            3600 * 24,
+            ttl_seconds,
             json.dumps(serialized_history),
         )
         token_count = token_counter.count_message_tokens(serialized_history)
         redis_client.setex(
             f"session_tokens:{user_id}",
-            3600 * 24,
+            ttl_seconds,
             str(token_count),
         )
         logging.debug(
@@ -128,9 +129,10 @@ def get_session_token_count(user_id: str) -> int:
             return 0
         messages = json.loads(session_data)
         token_count = token_counter.count_message_tokens(messages)
+        ttl_seconds = max(int(SESSION_TIMEOUT or 0), 60)
         redis_client.setex(
             f"session_tokens:{user_id}",
-            3600 * 24,
+            ttl_seconds,
             str(token_count),
         )
         return token_count
@@ -199,7 +201,8 @@ def hybrid_context_management(user_id: str, token_threshold: int) -> List[Dict[s
                 summary = summarize_conversation_history(formatted_normal)
             new_history = []
             if summary:
-                new_history.append({"role": "assistant", "content": f"สรุปการสนทนาก่อนหน้า: {summary}"})
+                # ใช้ role พิเศษสำหรับการสรุปที่ไม่แสดงให้ผู้ใช้เห็น
+                new_history.append({"role": "system_summary", "content": f"สรุปการสนทนาก่อนหน้า: {summary}"})
             new_history.extend(important_messages)
             new_history.extend(recent_messages)
             save_chat_session(user_id, new_history)
@@ -210,64 +213,80 @@ def hybrid_context_management(user_id: str, token_threshold: int) -> List[Dict[s
         return current_history
 
 
-def generate_contextual_followup_message(user_id: str, db, deepseek_client, config):
-    """สร้างข้อความติดตามที่เป็นไปตามบริบทของการสนทนาล่าสุดโดยใช้ DeepSeek AI"""
+def generate_contextual_followup_message(user_id: str, db, config):
+    """สร้างข้อความติดตามที่เป็นไปตามบริบทของการสนทนาล่าสุดโดยใช้ xAI Grok"""
     from .utils import safe_api_call, clean_ai_response
+    from .llm import grok_client
     
     try:
-        # ดึงประวัติการสนทนาล่าสุด 10 ครั้ง
-        recent_history = db.get_user_history(user_id, limit=10)
+        # ดึงประวัติการสนทนาล่าสุด 20 ครั้ง โดยใช้ max_tokens แทน limit
+        # ใช้ max_tokens สูงเพื่อให้ได้ประมาณ 20 ข้อความล่าสุด
+        recent_history = db.get_user_history(user_id, max_tokens=20000)
         
         # ถ้าไม่มีประวัติการสนทนา ใช้ข้อความติดตามทั่วไป
         if not recent_history:
             return get_default_followup_message()
         
-        # สร้างบริบทการสนทนาสำหรับ DeepSeek
-        conversation_context = ""
-        for _, user_msg, bot_resp in recent_history:
-            conversation_context += f"ผู้ใช้: {user_msg}\nใจดี: {bot_resp}\n\n"
+        # จำกัดให้แสดงเฉพาะ 20 ข้อความล่าสุด
+        # เนื่องจาก get_user_history เรียงจากใหม่ไปเก่า เราต้องจัดเรียงใหม่
+        if len(recent_history) > 20:
+            recent_history = recent_history[:20]
         
-        # สร้าง prompt สำหรับ DeepSeek
+        # เรียงจากเก่าไปใหม่เพื่อให้ AI เข้าใจบริบทที่ถูกต้อง
+        recent_history = list(reversed(recent_history))
+        
+        # สร้างบริบทการสนทนาสำหรับ Grok แบบมีโครงสร้าง
+        conversation_context = ""
+        total_messages = len(recent_history)
+        
+        for i, (_, user_msg, bot_resp) in enumerate(recent_history):
+            # เพิ่มหมายเลขลำดับเพื่อให้ AI เข้าใจความต่อเนื่อง
+            msg_number = i + 1
+            conversation_context += f"[{msg_number}/{total_messages}] ผู้ใช้: {user_msg}\n[{msg_number}/{total_messages}] ใจดี: {bot_resp}\n\n"
+        
+        # สร้าง prompt พร้อมบริบทที่ดีขึ้นสำหรับ Grok
         followup_prompt = f"""
-ต่อไปนี้คือประวัติการสนทนาล่าสุด 10 ครั้งระหว่างผู้ใช้และแชทบอท "ใจดี" ที่ช่วยเหลือคนเลิกสารเสพติด:
+ต่อไปนี้คือประวัติการสนทนาล่าสุดระหว่างผู้ใช้และแชทบอท "ใจดี" ที่ช่วยเหลือคนเลิกสารเสพติด (รวม {total_messages} คู่ข้อความ):
 
 {conversation_context}
 
-ในฐานะแชทบอท "ใจดี" โปรดสร้างข้อความติดตามผลที่:
-1. อ้างอิงถึงหัวข้อหรือประเด็นที่เราพูดคุยกันล่าสุด
-2. แสดงความห่วงใยและความต่อเนื่องในการดูแล
-3. เป็นมิตรและให้กำลังใจ
-4. ถามถึงความคืบหน้าหรือสถานการณ์ปัจจุบัน
-5. มีความยาวประมาณ 2-3 ประโยค
-6. ใช้ภาษาไทยที่เป็นธรรมชาติและอบอุ่น
+จากประวัติการสนทนาข้างต้น โปรดสร้างข้อความติดตามผลที่:
+1. อ้างอิงถึงหัวข้อ ปัญหา หรือความคืบหน้าที่เราพูดคุยกันล่าสุด
+2. แสดงความห่วงใยและเป็นการติดตามอย่างต่อเนื่อง
+3. ใช้ข้อมูลจากการสนทนาเพื่อสร้างความเชื่อมโยงที่เป็นธรรมชาติ
+4. ถามถึงสถานการณ์ปัจจุบันหรือความรู้สึกในช่วงที่ผ่านมา
+5. มีความยาวประมาณ 2-4 ประโยค
+6. ใช้ภาษาไทยที่อบอุ่นและเข้าใจง่าย
 7. เริ่มต้นด้วยคำทักทายที่เหมาะสม
 
-ข้อความติดตาม:"""
+โปรดสร้างข้อความติดตามที่แสดงให้เห็นว่าคุณจำและเข้าใจบริบทของการสนทนาก่อนหน้า:
+"""
 
-        # เรียกใช้ DeepSeek API
-        response = deepseek_client.chat.completions.create(
-            model=config.DEEPSEEK_MODEL,
+        # เรียกใช้ xAI Grok API ด้วยการตั้งค่าที่เหมาะสม
+        text = grok_client.send_chat(
             messages=[
-                {"role": "system", "content": "คุณคือแชทบอท 'ใจดี' ที่ช่วยเหลือคนเลิกสารเสพติดด้วยความเข้าใจและเป็นมิตร"},
+                {"role": "system", "content": "คุณคือแชทบอท 'ใจดี' ที่ช่วยเหลือคนเลิกสารเสพติดด้วยความเข้าใจและเป็นมิตร คุณสามารถจำและอ้างอิงถึงการสนทนาก่อนหน้าได้"},
                 {"role": "user", "content": followup_prompt}
             ],
-            temperature=0.7,  # เพิ่มความหลากหลายในการตอบ
-            max_tokens=200,   # จำกัดความยาว
-            top_p=0.9
+            model=config.XAI_MODEL,
+            temperature=0.6,
+            max_tokens=250,
+            top_p=0.85,
         )
         
-        # ตรวจสอบและทำความสะอาด response
-        if response and response.choices and response.choices[0].message.content:
-            followup_message = response.choices[0].message.content.strip()
+        # ตรวจสอบและทำความสะอาดผลลัพธ์
+        if text:
+            followup_message = text.strip()
             
             # ทำความสะอาดข้อความ
             followup_message = clean_ai_response(followup_message)
             
             # ตรวจสอบความยาวและเนื้อหา
-            if len(followup_message) > 20 and len(followup_message) < 500:
+            if len(followup_message) > 30 and len(followup_message) < 600:
+                logging.info(f"Successfully generated contextual follow-up message for user {user_id}: {len(followup_message)} characters")
                 return followup_message
             else:
-                logging.warning(f"AI generated follow-up message is too short or too long: {len(followup_message)} characters")
+                logging.warning(f"AI generated follow-up message length is outside acceptable range: {len(followup_message)} characters")
         
         # ถ้า AI response ไม่เหมาะสม ใช้ข้อความทั่วไป
         return get_fallback_followup_message()

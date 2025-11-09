@@ -1,0 +1,1952 @@
+﻿<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>แดชบอร์ด</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: light;
+      --gradient-start: #4c1d95;
+      --gradient-end: #1e3a8a;
+      --surface: rgba(255, 255, 255, 0.92);
+      --surface-strong: rgba(255, 255, 255, 0.98);
+      --border: rgba(148, 163, 184, 0.28);
+      --border-strong: rgba(148, 163, 184, 0.45);
+      --text-primary: #0f172a;
+      --text-muted: #64748b;
+      --accent: #6366f1;
+      --accent-soft: rgba(99, 102, 241, 0.16);
+      --shadow-lg: 0 38px 80px -40px rgba(15, 23, 42, 0.55);
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: 'Prompt', 'Segoe UI', sans-serif;
+      background: linear-gradient(180deg, #eef2ff 0%, #f8fafc 100%);
+      color: var(--text-primary);
+      line-height: 1.55;
+    }
+
+    body.modal-open {
+      overflow: hidden;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    h1, h2, h3, h4 {
+      margin: 0;
+      font-weight: 600;
+    }
+
+    p {
+      margin: 0;
+    }
+
+    button {
+      font-family: inherit;
+      border: none;
+      background: none;
+      cursor: pointer;
+    }
+
+    select {
+      font-family: inherit;
+    }
+
+    .dashboard-shell {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    .dashboard-hero {
+      position: relative;
+      padding: 72px 0 116px;
+      background: radial-gradient(circle at top left, rgba(116, 95, 255, 0.78), rgba(76, 29, 149, 0.9)),
+        linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+      color: #f8fafc;
+      overflow: hidden;
+    }
+
+    .dashboard-hero::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.18), transparent 55%),
+        radial-gradient(circle at 80% 30%, rgba(255, 255, 255, 0.12), transparent 50%);
+      mix-blend-mode: screen;
+      pointer-events: none;
+    }
+
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      width: min(1160px, 92vw);
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .hero-inner > div:first-child {
+      max-width: 680px;
+    }
+
+    .hero-inner h1 {
+      font-size: clamp(2rem, 4vw, 2.75rem);
+      letter-spacing: -0.02em;
+    }
+
+    .hero-inner p {
+      margin-top: 12px;
+      color: rgba(248, 250, 252, 0.85);
+      font-weight: 400;
+    }
+
+    .hero-status {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .hero-status p {
+      color: rgba(248, 250, 252, 0.82);
+      font-size: 0.9rem;
+    }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 999px;
+      font-weight: 500;
+      backdrop-filter: blur(12px);
+      background: rgba(15, 23, 42, 0.2);
+      color: inherit;
+    }
+
+    .status-chip.is-ok {
+      background: rgba(34, 197, 94, 0.15);
+      color: #bbf7d0;
+    }
+
+    .status-chip.is-error {
+      background: rgba(248, 113, 113, 0.22);
+      color: #fee2e2;
+    }
+
+    .status-chip.is-loading {
+      background: rgba(124, 58, 237, 0.22);
+      color: #ede9fe;
+    }
+
+    .eyebrow {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: rgba(148, 163, 184, 0.85);
+    }
+
+    .dashboard-main {
+      flex: 1;
+      width: min(1160px, 92vw);
+      margin: -68px auto 72px;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+    }
+
+    .card {
+      background: var(--surface);
+      border-radius: 28px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-lg);
+      padding: 28px;
+      backdrop-filter: blur(18px);
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 42px 80px -45px rgba(15, 23, 42, 0.55);
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .card-subtitle {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    .panel-header {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .panel-header h2 {
+      font-size: 1.35rem;
+    }
+
+    .panel-subtitle {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .filter-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 20px;
+      margin-top: 24px;
+    }
+
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 0.95rem;
+    }
+
+    .input-group span {
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    select {
+      border-radius: 16px;
+      border: 1px solid var(--border-strong);
+      padding: 12px 18px;
+      font-size: 1rem;
+      background: var(--surface-strong);
+      color: var(--text-primary);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    select:focus {
+      outline: none;
+      border-color: rgba(99, 102, 241, 0.8);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+    }
+
+    .updated-at {
+      margin-top: 18px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .ghost-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      border-radius: 999px;
+      padding: 10px 18px;
+      border: 1px solid rgba(248, 250, 252, 0.35);
+      color: inherit;
+      background: rgba(255, 255, 255, 0.12);
+      font-weight: 500;
+      transition: transform 0.2s ease, background 0.2s ease;
+    }
+
+    .ghost-button:hover:not(:disabled) {
+      transform: translateY(-2px);
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .ghost-button:disabled {
+      opacity: 0.6;
+      cursor: progress;
+    }
+
+    .primary-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px 20px;
+      border-radius: 16px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .primary-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 30px -18px rgba(99, 102, 241, 0.7);
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 20px;
+    }
+
+    .stat-card {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 18px;
+      align-items: center;
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      border-radius: 24px;
+      padding: 22px;
+    }
+
+    .stat-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+      font-weight: 600;
+    }
+
+    .stat-content {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .stat-label {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .stat-value {
+      font-size: 1.55rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    .stat-hint {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .chart-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+    }
+
+    .chart-area {
+      position: relative;
+      width: 100%;
+    }
+
+    .chart-area--sm {
+      height: 220px;
+    }
+
+    .chart-area--lg {
+      height: 280px;
+    }
+
+    .chart-area canvas {
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    .donut-wrapper {
+      position: relative;
+      display: grid;
+      place-items: center;
+    }
+
+    .donut-center {
+      position: absolute;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .donut-center strong {
+      font-size: 1.6rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .legend-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .legend-list li {
+      display: grid;
+      grid-template-columns: auto 1fr auto auto;
+      gap: 12px;
+      align-items: center;
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+    }
+
+    .legend-label {
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .legend-value {
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .legend-share {
+      font-size: 0.85rem;
+    }
+
+    .risk-content {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 24px;
+      align-items: center;
+    }
+
+    .trend-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .trend-summary div {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 140px;
+    }
+
+    .trend-label {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .trend-summary strong {
+      font-size: 1.25rem;
+    }
+
+    .engagement-content {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 20px;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 14px;
+    }
+
+    .metric-card {
+      background: rgba(255, 255, 255, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      border-radius: 18px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .metric-label {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 600;
+    }
+
+    .metric-card strong {
+      font-size: 1.1rem;
+    }
+
+    .keyword-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .keyword-chip {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 16px 18px;
+      border-radius: 18px;
+      border: 1px solid rgba(99, 102, 241, 0.16);
+      background: rgba(99, 102, 241, 0.08);
+      min-width: 180px;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .keyword-chip:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 18px 32px -22px rgba(99, 102, 241, 0.55);
+    }
+
+    .keyword-term {
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .keyword-meta {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .keyword-chip.risk-high {
+      border-color: rgba(239, 68, 68, 0.2);
+      background: rgba(239, 68, 68, 0.08);
+    }
+
+    .keyword-chip.risk-medium {
+      border-color: rgba(249, 115, 22, 0.2);
+      background: rgba(249, 115, 22, 0.08);
+    }
+
+    .keyword-chip.risk-general {
+      border-color: rgba(34, 197, 94, 0.2);
+      background: rgba(34, 197, 94, 0.08);
+    }
+
+    .keyword-chip.risk-contextual {
+      border-color: rgba(14, 165, 233, 0.2);
+      background: rgba(14, 165, 233, 0.08);
+    }
+
+    .keyword-chip.risk-unknown {
+      border-color: rgba(148, 163, 184, 0.2);
+      background: rgba(148, 163, 184, 0.08);
+    }
+
+    .user-table {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .user-table__header {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) repeat(3, minmax(0, 0.7fr)) minmax(0, 1fr);
+      gap: 16px;
+      padding: 0 18px;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .user-table__body {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .user-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) repeat(3, minmax(0, 0.7fr)) minmax(0, 1fr);
+      gap: 16px;
+      align-items: center;
+      border-radius: 20px;
+      padding: 16px 18px;
+      background: rgba(255, 255, 255, 0.85);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      text-align: left;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+
+    .user-row:hover {
+      transform: translateY(-2px);
+      border-color: rgba(99, 102, 241, 0.35);
+      box-shadow: 0 18px 40px -28px rgba(99, 102, 241, 0.45);
+    }
+
+    .user-entry {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .user-avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.85), rgba(59, 130, 246, 0.9));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-weight: 600;
+      font-size: 1rem;
+    }
+
+    .user-info {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .user-info strong {
+      font-size: 0.95rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .user-id {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+
+    .user-stat {
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .user-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      align-items: flex-end;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .risk-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .risk-chip.high {
+      background: rgba(239, 68, 68, 0.12);
+      color: #b91c1c;
+    }
+
+    .risk-chip.medium {
+      background: rgba(249, 115, 22, 0.12);
+      color: #c2410c;
+    }
+
+    .risk-chip.general {
+      background: rgba(34, 197, 94, 0.12);
+      color: #15803d;
+    }
+
+    .risk-chip.contextual {
+      background: rgba(14, 165, 233, 0.12);
+      color: #0369a1;
+    }
+
+    .risk-chip.unknown {
+      background: rgba(148, 163, 184, 0.16);
+      color: #475569;
+    }
+
+    .empty-state {
+      padding: 28px;
+      border-radius: 20px;
+      border: 1px dashed rgba(148, 163, 184, 0.4);
+      background: rgba(248, 250, 252, 0.7);
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.52);
+      backdrop-filter: blur(6px);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 72px 16px;
+      z-index: 40;
+      overflow-y: auto;
+    }
+
+    .modal-sheet {
+      background: var(--surface-strong);
+      border-radius: 32px;
+      width: min(960px, 100%);
+      box-shadow: 0 48px 100px -40px rgba(15, 23, 42, 0.55);
+      border: 1px solid rgba(226, 232, 240, 0.6);
+      display: flex;
+      flex-direction: column;
+      max-height: calc(100vh - 140px);
+      overflow: hidden;
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 32px 32px 0;
+      gap: 16px;
+    }
+
+    .modal-subtitle {
+      margin-top: 6px;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .modal-loading {
+      padding: 48px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      align-items: center;
+      font-size: 1rem;
+      color: var(--text-muted);
+    }
+
+    .modal-body {
+      padding: 24px 32px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .modal-section h4 {
+      font-size: 1.1rem;
+      margin-bottom: 16px;
+    }
+
+    .modal-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      background: var(--accent-soft);
+      border-radius: 22px;
+      padding: 18px 20px;
+    }
+
+    .modal-metrics div {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 0.95rem;
+      color: var(--text-muted);
+    }
+
+    .modal-metrics strong {
+      font-size: 1.1rem;
+      color: var(--text-primary);
+    }
+
+    .risk-feed {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      max-height: 220px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .risk-row {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      padding: 12px 14px;
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      background: rgba(255, 255, 255, 0.78);
+    }
+
+    .risk-info {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .risk-info strong {
+      font-size: 0.95rem;
+    }
+
+    .timeline {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      max-height: 280px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .timeline-item {
+      border-radius: 20px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      background: rgba(255, 255, 255, 0.88);
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .timeline-item.important {
+      border-color: rgba(249, 115, 22, 0.35);
+      box-shadow: 0 18px 40px -30px rgba(249, 115, 22, 0.45);
+    }
+
+    .timeline-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .timeline-messages p {
+      margin: 0;
+      display: flex;
+      gap: 8px;
+      font-size: 0.95rem;
+    }
+
+    .timeline-label {
+      font-weight: 600;
+      color: var(--text-muted);
+      min-width: 52px;
+    }
+
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 3px solid rgba(255, 255, 255, 0.35);
+      border-top-color: #fff;
+      animation: spin 0.8s linear infinite;
+    }
+
+    .spinner--sm {
+      width: 14px;
+      height: 14px;
+      border-width: 2px;
+    }
+
+    .skeleton-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 20px;
+    }
+
+    .skeleton {
+      position: relative;
+      min-height: 200px;
+      background: rgba(226, 232, 240, 0.35);
+      border-radius: 24px;
+      overflow: hidden;
+    }
+
+    .skeleton::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, rgba(248, 250, 252, 0), rgba(248, 250, 252, 0.65), rgba(248, 250, 252, 0));
+      animation: shimmer 1.6s infinite;
+    }
+
+    .error-card {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      color: #b91c1c;
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid rgba(248, 113, 113, 0.28);
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @keyframes shimmer {
+      0% {
+        transform: translateX(-100%);
+      }
+      100% {
+        transform: translateX(100%);
+      }
+    }
+
+    @media (min-width: 900px) {
+      .hero-inner {
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: flex-end;
+      }
+
+      .panel-header {
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+
+      .risk-content {
+        grid-template-columns: 240px 1fr;
+      }
+    }
+
+    @media (min-width: 1024px) {
+      .engagement-content {
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+      }
+    }
+
+    @media (max-width: 720px) {
+      .card {
+        padding: 22px;
+      }
+
+      .card-header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .risk-content {
+        grid-template-columns: 1fr;
+      }
+
+      .legend-list li {
+        grid-template-columns: auto 1fr;
+        gap: 8px 12px;
+      }
+
+      .user-table__header,
+      .user-row {
+        grid-template-columns: minmax(0, 1.6fr) repeat(2, minmax(0, 0.8fr));
+      }
+
+      .user-table__header span:nth-child(4),
+      .user-table__header span:nth-child(5),
+      .user-row span:nth-child(4),
+      .user-row span:nth-child(5) {
+        display: none;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <noscript>
+    <div style="max-width:640px;margin:48px auto;font-family:'Prompt','Segoe UI',sans-serif;text-align:center;color:#111827;">
+      <h1>ต้องเปิดใช้งาน JavaScript</h1>
+      <p>แดชบอร์ดนี้ต้องใช้ JavaScript และ React ในการแสดงผลข้อมูล</p>
+    </div>
+  </noscript>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  {% raw %}
+  <script>
+    (() => {
+      const { useState, useEffect, useMemo, useCallback } = React;
+      const html = htm.bind(React.createElement);
+
+      const numberFormatter = new Intl.NumberFormat('th-TH');
+      const percentFormatter = new Intl.NumberFormat('th-TH', { style: 'percent', maximumFractionDigits: 1, minimumFractionDigits: 1 });
+      const shortDateFormatter = new Intl.DateTimeFormat('th-TH', { day: 'numeric', month: 'short' });
+      const fullDateTimeFormatter = new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', timeStyle: 'short', hour12: false });
+      const decimalFormatterCache = {};
+
+      const riskMeta = {
+        high: { label: 'ระดับสูง', color: '#ef4444' },
+        medium: { label: 'ระวัง', color: '#f97316' },
+        general: { label: 'ทั่วไป', color: '#22c55e' },
+        contextual: { label: 'บริบท', color: '#0ea5e9' },
+        unknown: { label: 'ไม่ระบุ', color: '#94a3b8' }
+      };
+
+      const lookbackOptions = [7, 14, 30, 60, 90, 120, 180];
+      const userLimitOptions = [5, 10, 12, 15, 20, 30];
+      const keywordLimitOptions = [5, 10, 15, 20, 30];
+
+      function formatNumber(value) {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numberFormatter.format(numeric) : '--';
+      }
+
+      function formatDecimal(value, digits = 1) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+          return '--';
+        }
+        const cacheKey = String(digits);
+        if (!decimalFormatterCache[cacheKey]) {
+          decimalFormatterCache[cacheKey] = new Intl.NumberFormat('th-TH', {
+            minimumFractionDigits: digits,
+            maximumFractionDigits: digits
+          });
+        }
+        return decimalFormatterCache[cacheKey].format(numeric);
+      }
+
+      function formatPercentFromRatio(ratio) {
+        const numeric = Number(ratio);
+        return Number.isFinite(numeric) ? percentFormatter.format(Math.max(numeric, 0)) : '--';
+      }
+
+      function toDateSafe(value) {
+        if (!value) return null;
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? null : date;
+      }
+
+      function formatDateRange(start, end) {
+        const startDate = toDateSafe(start);
+        const endDate = toDateSafe(end);
+        if (!startDate && !endDate) return '-';
+        if (startDate && endDate && startDate.getTime() === endDate.getTime()) {
+          return shortDateFormatter.format(startDate);
+        }
+        const startLabel = startDate ? shortDateFormatter.format(startDate) : '-';
+        const endLabel = endDate ? shortDateFormatter.format(endDate) : '-';
+        return `${startLabel} – ${endLabel}`;
+      }
+
+      function formatDateTime(value) {
+        const date = toDateSafe(value);
+        return date ? fullDateTimeFormatter.format(date) : '-';
+      }
+
+      function Spinner({ size = 'md' }) {
+        const className = size === 'sm' ? 'spinner spinner--sm' : 'spinner';
+        return html`<span className=${className} aria-hidden="true"></span>`;
+      }
+
+      function FilterPanel({ params, onParamChange, onRefresh, lastUpdatedLabel, loading }) {
+        return html`
+          <section className="card filter-panel">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">การตั้งค่า</p>
+                <h2>เลือกข้อมูลสำหรับการวิเคราะห์</h2>
+                <p className="panel-subtitle">ปรับพารามิเตอร์เพื่อดูแนวโน้มพฤติกรรมในมุมมองที่ต้องการ</p>
+              </div>
+              <button className="ghost-button" type="button" onClick=${onRefresh} disabled=${loading}>
+                ${loading ? html`<${Spinner} size="sm" />` : html`<span aria-hidden="true">⟳</span>`}
+                <span>${loading ? 'กำลังโหลด' : 'รีเฟรชข้อมูล'}</span>
+              </button>
+            </div>
+            <div className="filter-grid">
+              <label className="input-group">
+                <span>ช่วงเวลาวิเคราะห์ (วัน)</span>
+                <select value=${params.lookbackDays} onChange=${(event) => onParamChange('lookbackDays', Number(event.target.value))}>
+                  ${lookbackOptions.map((days) => html`<option key=${days} value=${days}>${days} วัน</option>`)}
+                </select>
+              </label>
+              <label className="input-group">
+                <span>จำนวนผู้ใช้สูงสุด</span>
+                <select value=${params.userLimit} onChange=${(event) => onParamChange('userLimit', Number(event.target.value))}>
+                  ${userLimitOptions.map((limit) => html`<option key=${limit} value=${limit}>${limit} คน</option>`)}
+                </select>
+              </label>
+              <label className="input-group">
+                <span>จำนวนคีย์เวิร์ดยอดนิยม</span>
+                <select value=${params.keywordLimit} onChange=${(event) => onParamChange('keywordLimit', Number(event.target.value))}>
+                  ${keywordLimitOptions.map((limit) => html`<option key=${limit} value=${limit}>${limit} คำ</option>`)}
+                </select>
+              </label>
+            </div>
+            <p className="updated-at">อัปเดตล่าสุด: ${lastUpdatedLabel || '—'}</p>
+          </section>
+        `;
+      }
+
+      function SummaryDeck({ overview, quality }) {
+        const importantShareRaw = Number(quality.important_message_share);
+        const shareValue = Number.isFinite(importantShareRaw)
+          ? importantShareRaw
+          : (overview.total_conversations ? overview.important_messages / overview.total_conversations : 0);
+        const avgTokens = Number(quality.avg_tokens_per_message);
+        const deepUsers = Number(quality.deep_conversation_users) || 0;
+
+        const stats = [
+          { key: 'total', label: 'บทสนทนาทั้งหมด', value: formatNumber(overview.total_conversations), hint: 'จำนวนบทสนทนาที่เกิดขึ้นในช่วงที่เลือก', accent: '#6366f1' },
+          { key: 'users', label: 'ผู้ใช้ที่มีส่วนร่วม', value: formatNumber(overview.unique_users), hint: 'จำนวนผู้ใช้ที่โต้ตอบกับระบบ', accent: '#0ea5e9' },
+          { key: 'important', label: 'ข้อความสำคัญ', value: formatNumber(overview.important_messages), hint: `คิดเป็น ${formatPercentFromRatio(shareValue)}`, accent: '#f97316' },
+          { key: 'followups', label: 'ภารกิจติดตาม', value: formatNumber(overview.active_follow_ups), hint: 'เคสที่ต้องติดตามต่อ', accent: '#22c55e' },
+          { key: 'avgTokens', label: 'โทเคนเฉลี่ยต่อข้อความ', value: formatDecimal(Number.isFinite(avgTokens) ? avgTokens : 0, 2), hint: 'เชิงลึกของบทสนทนา', accent: '#8b5cf6' },
+          { key: 'deepUsers', label: 'ผู้ใช้เชิงลึก', value: formatNumber(deepUsers), hint: 'ผู้ใช้ที่มีบริบทสูงจากโทเคนมากกว่า 2,000', accent: '#ef4444' }
+        ];
+
+        return html`
+          <section className="stat-grid">
+            ${stats.map((item) => html`
+              <article key=${item.key} className="stat-card">
+                <div className="stat-icon" style=${{ backgroundColor: item.accent + '20', color: item.accent }}>
+                  <span aria-hidden="true">●</span>
+                </div>
+                <div className="stat-content">
+                  <p className="stat-label">${item.label}</p>
+                  <p className="stat-value">${item.value}</p>
+                  <p className="stat-hint">${item.hint}</p>
+                </div>
+              </article>
+            `)}
+          </section>
+        `;
+      }
+      function RiskDonut({ segments }) {
+        const canvasRef = React.useRef(null);
+        const chartRef = React.useRef(null);
+        const total = segments.reduce((acc, item) => acc + item.value, 0);
+
+        React.useEffect(() => {
+          const canvas = canvasRef.current;
+          if (!canvas || !window.Chart || segments.length === 0) {
+            return undefined;
+          }
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            return undefined;
+          }
+          if (chartRef.current) {
+            chartRef.current.destroy();
+          }
+          chartRef.current = new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+              labels: segments.map((item) => item.label),
+              datasets: [
+                {
+                  data: segments.map((item) => item.value),
+                  backgroundColor: segments.map((item) => item.color),
+                  borderWidth: 0,
+                  hoverOffset: 12
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              cutout: '62%',
+              plugins: {
+                legend: { display: false },
+                tooltip: {
+                  callbacks: {
+                    label(context) {
+                      const share = total ? context.parsed / total : 0;
+                      return `${context.label}: ${formatNumber(context.parsed)} • ${formatPercentFromRatio(share)}`;
+                    }
+                  }
+                }
+              }
+            }
+          });
+
+          return () => {
+            if (chartRef.current) {
+              chartRef.current.destroy();
+            }
+          };
+        }, [segments, total]);
+
+        return html`<canvas ref=${canvasRef} role="img" aria-label="การแจกแจงระดับความเสี่ยง"></canvas>`;
+      }
+
+      function RiskSummaryCard({ riskSummary }) {
+        const entries = Object.entries(riskSummary || {});
+        const total = entries.reduce((acc, [, value]) => acc + (Number(value) || 0), 0);
+        const donutSegments = entries
+          .filter(([key, value]) => ['high', 'medium', 'general', 'unknown', 'contextual'].includes(key) && Number(value) > 0)
+          .map(([key, value]) => ({
+            key,
+            label: (riskMeta[key]?.label) || key,
+            value: Number(value) || 0,
+            color: riskMeta[key]?.color || '#94a3b8'
+          }));
+
+        return html`
+          <article className="card chart-card">
+            <header className="card-header">
+              <div>
+                <p className="eyebrow">การเฝ้าระวังความเสี่ยง</p>
+                <h3>ภาพรวมระดับความเสี่ยง</h3>
+              </div>
+            </header>
+            ${donutSegments.length === 0
+              ? html`<div className="empty-state">ยังไม่มีเหตุการณ์ความเสี่ยงในช่วงเวลานี้</div>`
+              : html`
+                <div className="risk-content">
+                  <div className="donut-wrapper">
+                    <div className="chart-area chart-area--sm">
+                      <${RiskDonut} segments=${donutSegments} />
+                    </div>
+                    <div className="donut-center">
+                      <strong>${formatNumber(total)}</strong>
+                      <span>เหตุการณ์</span>
+                    </div>
+                  </div>
+                  <ul className="legend-list">
+                    ${donutSegments.map((item) => {
+                      const share = total ? item.value / total : 0;
+                      return html`
+                        <li key=${item.key}>
+                          <span className="legend-dot" style=${{ backgroundColor: item.color }}></span>
+                          <span className="legend-label">${item.label}</span>
+                          <span className="legend-value">${formatNumber(item.value)}</span>
+                          <span className="legend-share">${formatPercentFromRatio(share)}</span>
+                        </li>
+                      `;
+                    })}
+                  </ul>
+                </div>
+              `}
+          </article>
+        `;
+      }
+
+      function TrendLine({ labels, totals, importantShares }) {
+        const canvasRef = React.useRef(null);
+        const chartRef = React.useRef(null);
+
+        React.useEffect(() => {
+          const canvas = canvasRef.current;
+          if (!canvas || !window.Chart || labels.length === 0) {
+            return undefined;
+          }
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            return undefined;
+          }
+          if (chartRef.current) {
+            chartRef.current.destroy();
+          }
+          chartRef.current = new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels,
+              datasets: [
+                {
+                  label: 'ข้อความทั้งหมด',
+                  data: totals,
+                  borderColor: '#6366f1',
+                  backgroundColor: 'rgba(99,102,241,0.18)',
+                  tension: 0.32,
+                  fill: 'origin',
+                  pointRadius: 2.5,
+                  pointHoverRadius: 4
+                },
+                {
+                  label: 'สัดส่วนข้อความสำคัญ (%)',
+                  data: importantShares.map((value) => Number.isFinite(value) ? Number(value.toFixed(2)) : 0),
+                  borderColor: '#f97316',
+                  backgroundColor: 'rgba(249,115,22,0.18)',
+                  tension: 0.32,
+                  pointRadius: 2.5,
+                  pointHoverRadius: 4,
+                  pointBackgroundColor: '#f97316',
+                  pointBorderColor: '#ffffff',
+                  pointBorderWidth: 1,
+                  yAxisID: 'percentage',
+                  fill: 'origin'
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              interaction: { mode: 'index', intersect: false },
+              scales: {
+                y: {
+                  beginAtZero: true,
+                  ticks: {
+                    callback(value) {
+                      return formatNumber(value);
+                    }
+                  },
+                  grid: { color: 'rgba(148, 163, 184, 0.25)' },
+                  title: { display: true, text: 'จำนวนข้อความ' }
+                },
+                percentage: {
+                  position: 'right',
+                  beginAtZero: true,
+                  suggestedMax: 100,
+                  ticks: {
+                    callback(value) {
+                      return `${value}%`;
+                    }
+                  },
+                  grid: { drawOnChartArea: false },
+                  title: { display: true, text: '% ข้อความสำคัญ' }
+                },
+                x: {
+                  grid: { display: false }
+                }
+              },
+              plugins: {
+                legend: { display: true, labels: { usePointStyle: true } },
+                tooltip: {
+                  callbacks: {
+                    label(context) {
+                      if (context.datasetIndex === 0) {
+                        return `ข้อความทั้งหมด: ${formatNumber(context.parsed.y)}`;
+                      }
+                      return `ข้อความสำคัญ: ${context.parsed.y.toFixed(1)}%`;
+                    }
+                  }
+                }
+              }
+            }
+          });
+
+          return () => {
+            if (chartRef.current) {
+              chartRef.current.destroy();
+            }
+          };
+        }, [labels, totals, importantShares]);
+
+        return html`<canvas ref=${canvasRef} role="img" aria-label="แนวโน้มข้อความต่อวัน"></canvas>`;
+      }
+
+      function TrendPanel({ entries }) {
+        const hasEntries = Array.isArray(entries) && entries.length > 0;
+
+        const labels = hasEntries
+          ? entries.map((item) => {
+              const date = toDateSafe(item.date);
+              return date ? shortDateFormatter.format(date) : item.date || '';
+            })
+          : [];
+
+        const totals = hasEntries ? entries.map((item) => Number(item.total_messages) || 0) : [];
+        const shares = hasEntries
+          ? entries.map((item, index) => {
+              const total = totals[index] || 0;
+              const important = Number(item.important_messages) || 0;
+              return total ? (important / total) * 100 : 0;
+            })
+          : [];
+
+        const sumTotals = totals.reduce((acc, value) => acc + value, 0);
+        const sumImportant = hasEntries
+          ? entries.reduce((acc, item) => acc + (Number(item.important_messages) || 0), 0)
+          : 0;
+        const rangeLabel = hasEntries
+          ? formatDateRange(entries[0]?.date, entries[entries.length - 1]?.date)
+          : '-';
+
+        return html`
+          <article className="card chart-card">
+            <header className="card-header">
+              <div>
+                <p className="eyebrow">แนวโน้มข้อความ</p>
+                <h3>จังหวะการสนทนาในช่วง ${rangeLabel}</h3>
+              </div>
+            </header>
+            ${!hasEntries
+              ? html`<div className="empty-state">ยังไม่มีข้อมูลแนวโน้มในช่วงเวลานี้</div>`
+              : html`
+                <div className="trend-summary">
+                  <div>
+                    <span className="trend-label">ข้อความทั้งหมด</span>
+                    <strong>${formatNumber(sumTotals)}</strong>
+                  </div>
+                  <div>
+                    <span className="trend-label">ข้อความสำคัญ</span>
+                    <strong>${formatNumber(sumImportant)}</strong>
+                  </div>
+                  <div>
+                    <span className="trend-label">สัดส่วนข้อความสำคัญ</span>
+                    <strong>${formatPercentFromRatio(sumTotals ? sumImportant / sumTotals : 0)}</strong>
+                  </div>
+                </div>
+                <div className="chart-area chart-area--lg">
+                  <${TrendLine} labels=${labels} totals=${totals} importantShares=${shares} />
+                </div>
+              `}
+          </article>
+        `;
+      }
+      function EngagementBar({ segments }) {
+        const canvasRef = React.useRef(null);
+        const chartRef = React.useRef(null);
+
+        React.useEffect(() => {
+          const canvas = canvasRef.current;
+          if (!canvas || !window.Chart || segments.length === 0) {
+            return undefined;
+          }
+
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            return undefined;
+          }
+
+          if (chartRef.current) {
+            chartRef.current.destroy();
+          }
+
+          chartRef.current = new Chart(ctx, {
+            type: 'bar',
+            data: {
+              labels: segments.map((item) => item.label),
+              datasets: [
+                {
+                  data: segments.map((item) => item.value),
+                  backgroundColor: segments.map((item) => item.color),
+                  borderRadius: 14,
+                  borderSkipped: false
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              indexAxis: 'y',
+              scales: {
+                x: {
+                  beginAtZero: true,
+                  grid: { color: 'rgba(148, 163, 184, 0.25)', borderDash: [4, 4] },
+                  ticks: {
+                    callback(value) {
+                      return formatNumber(value);
+                    }
+                  }
+                },
+                y: {
+                  grid: { display: false }
+                }
+              },
+              plugins: {
+                legend: { display: false },
+                tooltip: {
+                  callbacks: {
+                    label(context) {
+                      return `${context.label}: ${formatNumber(context.parsed.x)}`;
+                    }
+                  }
+                }
+              }
+            }
+          });
+
+          return () => {
+            if (chartRef.current) {
+              chartRef.current.destroy();
+            }
+          };
+        }, [segments]);
+
+        return html`<canvas ref=${canvasRef} role="img" aria-label="การแบ่งกลุ่มผู้ใช้"></canvas>`;
+      }
+
+      function EngagementPanel({ engagement, quality }) {
+        const segments = [
+          { key: 'high', label: 'ดูแลใกล้ชิด', value: Number(engagement.high_focus_users) || 0, color: riskMeta.high.color },
+          { key: 'growth', label: 'เฝ้าระวังการเติบโต', value: Number(engagement.growth_watch_users) || 0, color: '#facc15' },
+          { key: 'monitor', label: 'ติดตามต่อเนื่อง', value: Number(engagement.monitor_users) || 0, color: riskMeta.general.color }
+        ].filter((item) => item.value > 0);
+
+        const metrics = [
+          { key: 'active', label: 'ผู้ใช้ที่มีปฏิสัมพันธ์', value: formatNumber(engagement.active_users) },
+          { key: 'returning', label: 'ผู้ใช้กลับมาใช้ซ้ำ', value: formatNumber(engagement.returning_users) },
+          { key: 'messages', label: 'ข้อความเฉลี่ยต่อคน', value: formatDecimal(Number(engagement.avg_messages_per_user) || 0, 1) },
+          { key: 'important', label: 'ข้อความสำคัญ', value: formatPercentFromRatio(quality.important_message_share || 0) },
+          { key: 'tokens', label: 'โทเคนเฉลี่ยต่อข้อความ', value: formatDecimal(Number(quality.avg_tokens_per_message) || 0, 2) },
+          { key: 'followups', label: 'ติดตามที่กำลังทำ', value: formatNumber(quality.active_follow_ups) }
+        ];
+
+        return html`
+          <article className="card chart-card">
+            <header className="card-header">
+              <div>
+                <p className="eyebrow">ภาพรวมผู้ใช้</p>
+                <h3>การกระจายตัวของผู้รับบริการ</h3>
+              </div>
+            </header>
+            <div className="engagement-content">
+              ${segments.length === 0
+                ? html`<div className="empty-state">ยังไม่มีการจำแนกกลุ่มผู้ใช้ในช่วงเวลานี้</div>`
+                : html`<div className="chart-area chart-area--sm">
+                    <${EngagementBar} segments=${segments} />
+                  </div>`}
+              <div className="metric-grid">
+                ${metrics.map((item) => html`
+                  <div key=${item.key} className="metric-card">
+                    <span className="metric-label">${item.label}</span>
+                    <strong>${item.value}</strong>
+                  </div>
+                `)}
+              </div>
+            </div>
+          </article>
+        `;
+      }
+
+      function KeywordsPanel({ keywords }) {
+        const items = Array.isArray(keywords) ? keywords : [];
+        return html`
+          <section className="card keyword-card">
+            <header className="card-header">
+              <div>
+                <p className="eyebrow">ประเด็นสนทนาเด่น</p>
+                <h3>คีย์เวิร์ดยอดนิยมจากบทสนทนา</h3>
+              </div>
+            </header>
+            ${items.length === 0
+              ? html`<div className="empty-state">ยังไม่มีคีย์เวิร์ดที่ถูกใช้งานบ่อยในช่วงเวลานี้</div>`
+              : html`
+                <div className="keyword-grid">
+                  ${items.map((item) => {
+                    const riskLevel = riskMeta[item.risk_level]?.label || 'บริบท';
+                    const tone = item.risk_level || 'contextual';
+                    return html`
+                      <span key=${item.keyword} className=${`keyword-chip risk-${tone}`}>
+                        <span className="keyword-term">${item.keyword}</span>
+                        <span className="keyword-meta">${riskLevel} • ${formatNumber(item.count)}</span>
+                      </span>
+                    `;
+                  })}
+                </div>
+              `}
+          </section>
+        `;
+      }
+
+      function getInitials(value) {
+        if (!value) {
+          return '—';
+        }
+        const parts = String(value).trim().split(/\s+/).filter(Boolean);
+        if (parts.length === 0) {
+          return String(value).slice(0, 2).toUpperCase();
+        }
+        if (parts.length === 1) {
+          return parts[0].slice(0, 2).toUpperCase();
+        }
+        return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+      }
+
+      function UserTable({ users, onInspect }) {
+        const items = Array.isArray(users) ? users : [];
+        return html`
+          <section className="card user-card">
+            <header className="card-header">
+              <div>
+                <p className="eyebrow">ผู้ใช้ที่ต้องติดตาม</p>
+                <h3>ภาพรวมผู้ใช้รายบุคคล</h3>
+              </div>
+              <p className="card-subtitle">คลิกเพื่อดูรายละเอียดบทสนทนาและเหตุการณ์ความเสี่ยง</p>
+            </header>
+            ${items.length === 0
+              ? html`<div className="empty-state">ยังไม่มีข้อมูลผู้ใช้สำหรับการวิเคราะห์</div>`
+              : html`
+                <div className="user-table">
+                  <div className="user-table__header">
+                    <span>ผู้ใช้</span>
+                    <span>ข้อความทั้งหมด</span>
+                    <span>ข้อความสำคัญ</span>
+                    <span>สัดส่วนสำคัญ</span>
+                    <span>ล่าสุด</span>
+                  </div>
+                  <div className="user-table__body">
+                    ${items.map((user) => {
+                      const name = user.display_name || user.alias || user.nickname || user.user_id;
+                      const lastInteraction = formatDateTime(user.last_interaction);
+                      const importantRatio = formatPercentFromRatio(user.important_ratio || 0);
+                      const hasAlert = Array.isArray(user.recent_risk_events) && user.recent_risk_events.some((event) => event.risk_level === 'high');
+                      const chipLabel = hasAlert ? 'เตือนสูง' : user.recent_risk_events?.length ? 'มีการแจ้งเตือน' : null;
+                      const chipTone = hasAlert ? 'high' : 'medium';
+
+                      return html`
+                        <button key=${user.user_id} type="button" className="user-row" onClick=${() => onInspect(user.user_id)}>
+                          <span className="user-entry">
+                            <span className="user-avatar">${getInitials(name)}</span>
+                            <span className="user-info">
+                              <strong>${name}</strong>
+                              <span className="user-id">${user.user_id}</span>
+                            </span>
+                          </span>
+                          <span className="user-stat">${formatNumber(user.total_messages)}</span>
+                          <span className="user-stat">${formatNumber(user.important_messages)}</span>
+                          <span className="user-stat">${importantRatio}</span>
+                          <span className="user-meta">
+                            <span>${lastInteraction}</span>
+                            ${chipLabel ? html`<span className=${`risk-chip ${chipTone}`}>${chipLabel}</span>` : null}
+                          </span>
+                        </button>
+                      `;
+                    })}
+                  </div>
+                </div>
+              `}
+          </section>
+        `;
+      }
+
+      function UserModal({ userId, detail, loading, error, onClose }) {
+        React.useEffect(() => {
+          if (userId) {
+            document.body.classList.add('modal-open');
+          }
+          return () => {
+            document.body.classList.remove('modal-open');
+          };
+        }, [userId]);
+
+        if (!userId) {
+          return null;
+        }
+
+        const summary = detail?.summary || {};
+        const history = Array.isArray(detail?.history) ? detail.history : [];
+        const riskEvents = Array.isArray(detail?.risk_events)
+          ? detail.risk_events.filter((event) => (event.risk_level || 'general') !== 'general')
+          : [];
+
+        return html`
+          <div className="modal-backdrop" role="dialog" aria-modal="true" onClick=${(event) => {
+            if (event.target === event.currentTarget) {
+              onClose();
+            }
+          }}>
+            <div className="modal-sheet">
+              <div className="modal-header">
+                <div>
+                  <p className="eyebrow">รายละเอียดผู้ใช้</p>
+                  <h3>${summary.display_name || summary.alias || summary.user_id || 'ไม่ทราบชื่อ'}</h3>
+                  <p className="modal-subtitle">${summary.user_id || userId}</p>
+                </div>
+                <button type="button" className="ghost-button" onClick=${onClose} aria-label="ปิดหน้าต่าง">
+                  ✕
+                </button>
+              </div>
+              ${loading
+                ? html`<div className="modal-loading"><${Spinner} /><p>กำลังดึงข้อมูลบทสนทนา...</p></div>`
+                : error
+                  ? html`<div className="empty-state">${error}</div>`
+                  : html`
+                    <div className="modal-body">
+                      <section className="modal-section">
+                        <h4>สรุปภาพรวม</h4>
+                        <div className="modal-metrics">
+                          <div>
+                            <span>ข้อความทั้งหมด</span>
+                            <strong>${formatNumber(summary.total_messages)}</strong>
+                          </div>
+                          <div>
+                            <span>ข้อความสำคัญ</span>
+                            <strong>${formatNumber(summary.important_messages)}</strong>
+                          </div>
+                          <div>
+                            <span>สัดส่วนข้อความสำคัญ</span>
+                            <strong>${formatPercentFromRatio(summary.important_ratio || 0)}</strong>
+                          </div>
+                          <div>
+                            <span>โทเคนสะสม</span>
+                            <strong>${formatNumber(summary.total_tokens)}</strong>
+                          </div>
+                          <div>
+                            <span>ล่าสุด</span>
+                            <strong>${formatDateTime(summary.last_interaction)}</strong>
+                          </div>
+                          <div>
+                            <span>เริ่มต้น</span>
+                            <strong>${formatDateTime(summary.first_interaction)}</strong>
+                          </div>
+                        </div>
+                      </section>
+                      <section className="modal-section">
+                        <h4>เหตุการณ์ความเสี่ยงล่าสุด</h4>
+                        ${riskEvents.length === 0
+                          ? html`<div className="empty-state">ยังไม่มีเหตุการณ์ความเสี่ยงที่ต้องติดตาม</div>`
+                          : html`
+                            <div className="risk-feed">
+                              ${riskEvents.map((event, index) => html`
+                                <div key=${index} className="risk-row">
+                                  <span className=${`risk-chip ${event.risk_level || 'unknown'}`}>
+                                    ${riskMeta[event.risk_level]?.label || 'ไม่ระบุ'}
+                                  </span>
+                                  <div className="risk-info">
+                                    <strong>${formatDateTime(event.timestamp)}</strong>
+                                    <span>${Array.isArray(event.keywords) && event.keywords.length ? event.keywords.join(', ') : 'ไม่มีคีย์เวิร์ด'}</span>
+                                  </div>
+                                </div>
+                              `)}
+                            </div>
+                          `}
+                      </section>
+                      <section className="modal-section">
+                        <h4>ประวัติการสนทนา</h4>
+                        ${history.length === 0
+                          ? html`<div className="empty-state">ยังไม่มีประวัติการสนทนาในช่วงนี้</div>`
+                          : html`
+                            <ul className="timeline">
+                              ${history.map((item, index) => {
+                                const timestamp = formatDateTime(item.timestamp);
+                                return html`
+                                  <li key=${index} className=${item.important ? 'timeline-item important' : 'timeline-item'}>
+                                    <div className="timeline-meta">
+                                      <span>${timestamp}</span>
+                                      ${item.important ? html`<span className="risk-chip medium">สำคัญ</span>` : null}
+                                    </div>
+                                    <div className="timeline-messages">
+                                      <p><span className="timeline-label">ผู้ใช้:</span> ${item.user_message || '-'}</p>
+                                      <p><span className="timeline-label">ใจดี:</span> ${item.bot_response || '-'}</p>
+                                    </div>
+                                  </li>
+                                `;
+                              })}
+                            </ul>
+                          `}
+                      </section>
+                    </div>
+                  `}
+            </div>
+          </div>
+        `;
+      }
+
+      function LoadingState() {
+        return html`
+          <div className="skeleton-grid">
+            ${Array.from({ length: 4 }).map((_, index) => html`<div key=${index} className="card skeleton"></div>`)}
+          </div>
+        `;
+      }
+
+      function DashboardApp() {
+        const [params, setParams] = useState({ lookbackDays: 30, userLimit: 12, keywordLimit: 10 });
+        const [insights, setInsights] = useState(null);
+        const [loading, setLoading] = useState(false);
+        const [error, setError] = useState(null);
+        const [refreshIndex, setRefreshIndex] = useState(0);
+        const [selectedUser, setSelectedUser] = useState(null);
+        const [userDetail, setUserDetail] = useState(null);
+        const [userLoading, setUserLoading] = useState(false);
+        const [userError, setUserError] = useState(null);
+
+        useEffect(() => {
+          let active = true;
+          async function fetchInsights() {
+            setLoading(true);
+            setError(null);
+            try {
+              const query = new URLSearchParams({
+                limit: params.userLimit,
+                lookback_days: params.lookbackDays,
+                keyword_limit: params.keywordLimit
+              });
+              const response = await fetch(`/api/dashboard/insights?${query.toString()}`);
+              if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+              }
+              const data = await response.json();
+              if (active) {
+                setInsights(data);
+              }
+            } catch (err) {
+              console.error('Failed to load dashboard insights', err);
+              if (active) {
+                setError('ไม่สามารถดึงข้อมูลแดชบอร์ดได้ กรุณาลองใหม่อีกครั้ง');
+              }
+            } finally {
+              if (active) {
+                setLoading(false);
+              }
+            }
+          }
+          fetchInsights();
+          return () => {
+            active = false;
+          };
+        }, [params, refreshIndex]);
+
+        useEffect(() => {
+          if (!selectedUser) {
+            setUserDetail(null);
+            setUserError(null);
+            return undefined;
+          }
+          let active = true;
+          setUserLoading(true);
+          setUserError(null);
+          setUserDetail(null);
+          async function fetchUserDetail() {
+            try {
+              const response = await fetch(`/api/dashboard/users/${encodeURIComponent(selectedUser)}/history?limit=80`);
+              if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+              }
+              const data = await response.json();
+              if (active) {
+                setUserDetail(data);
+              }
+            } catch (err) {
+              console.error('Failed to load user history', err);
+              if (active) {
+                setUserError('ไม่สามารถโหลดรายละเอียดผู้ใช้นี้ได้');
+              }
+            } finally {
+              if (active) {
+                setUserLoading(false);
+              }
+            }
+          }
+          fetchUserDetail();
+          return () => {
+            active = false;
+          };
+        }, [selectedUser]);
+
+        const handleParamChange = useCallback((key, value) => {
+          setParams((prev) => {
+            if (prev[key] === value) {
+              return prev;
+            }
+            return { ...prev, [key]: value };
+          });
+        }, []);
+
+        const handleRefresh = useCallback(() => {
+          setRefreshIndex((index) => index + 1);
+        }, []);
+
+        const handleInspectUser = useCallback((userId) => {
+          setSelectedUser(userId);
+        }, []);
+
+        const generatedAtLabel = useMemo(() => formatDateTime(insights?.generated_at), [insights?.generated_at]);
+        const overview = insights?.overview || { total_conversations: 0, unique_users: 0, important_messages: 0, active_follow_ups: 0 };
+        const riskSummary = insights?.risk_summary || { high: 0, medium: 0, general: 0, unknown: 0 };
+        const infographic = insights?.infographic || { engagement: {}, quality: {}, message_trend: [] };
+        const keywords = insights?.top_keywords || [];
+        const users = insights?.users || [];
+
+        const showSkeleton = loading && !insights;
+
+        return html`
+          <div className="dashboard-shell">
+            <header className="dashboard-hero">
+              <div className="hero-inner">
+                <div>
+                  <p className="eyebrow">แดชบอร์ดงานวิจัย</p>
+                  <h1>ข้อมูลเชิงลึกการดูแลและติดตาม</h1>
+                  <p>ติดตามพฤติกรรมการสนทนาในมุมมองที่พร้อมนำไปใช้ต่อในงานวิจัยและการดูแลผู้รับบริการ</p>
+                </div>
+                <div className="hero-status">
+                  <span className=${`status-chip ${loading ? 'is-loading' : error ? 'is-error' : 'is-ok'}`}>
+                    ${loading ? html`<${Spinner} size="sm" />` : null}
+                    <span>${loading ? 'กำลังอัปเดตข้อมูล...' : (error ? 'มีข้อผิดพลาดในการอัปเดต' : 'ข้อมูลพร้อมใช้งาน')}</span>
+                  </span>
+                  <p>อัปเดตล่าสุด: ${generatedAtLabel || '—'}</p>
+                </div>
+              </div>
+            </header>
+            <main className="dashboard-main">
+              <${FilterPanel}
+                params=${params}
+                onParamChange=${handleParamChange}
+                onRefresh=${handleRefresh}
+                lastUpdatedLabel=${generatedAtLabel}
+                loading=${loading}
+              />
+              ${error && !insights
+                ? html`<div className="card error-card">
+                    <p>${error}</p>
+                    <button type="button" className="primary-button" onClick=${handleRefresh}>ลองอีกครั้ง</button>
+                  </div>`
+                : null}
+              ${showSkeleton
+                ? html`<${LoadingState} />`
+                : insights
+                  ? html`
+                    <${SummaryDeck} overview=${overview} quality=${infographic.quality || {}} />
+                    <section className="chart-grid">
+                      <${RiskSummaryCard} riskSummary=${riskSummary} />
+                      <${TrendPanel} entries=${infographic.message_trend || []} />
+                      <${EngagementPanel} engagement=${infographic.engagement || {}} quality=${infographic.quality || {}} />
+                    </section>
+                    <${KeywordsPanel} keywords=${keywords} />
+                    <${UserTable} users=${users} onInspect=${handleInspectUser} />
+                  `
+                  : null}
+            </main>
+            <${UserModal}
+              userId=${selectedUser}
+              detail=${userDetail}
+              loading=${userLoading}
+              error=${userError}
+              onClose=${() => setSelectedUser(null)}
+            />
+          </div>
+        `;
+      }
+
+      const rootElement = document.getElementById('root');
+      if (rootElement) {
+        const root = ReactDOM.createRoot(rootElement);
+        root.render(html`<${DashboardApp} />`);
+      }
+    })();
+  </script>
+  {% endraw %}
+</body>
+</html>
+
+
