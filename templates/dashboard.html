@@ -1388,10 +1388,6 @@
                 <p className="panel-subtitle">ปรับพารามิเตอร์เพื่อดูแนวโน้มพฤติกรรมในมุมมองที่ต้องการ</p>
               </div>
               <div className="panel-controls">
-                <button className="secondary-button" type="button" onClick=${onExport} disabled=${loading}>
-                  <span aria-hidden="true">⬇</span>
-                  <span>ส่งออก CSV</span>
-                </button>
                 <button className="ghost-button" type="button" onClick=${onRefresh} disabled=${loading}>
                   ${loading ? html`<${Spinner} size="sm" />` : html`<span aria-hidden="true">⟳</span>`}
                   <span>${loading ? 'กำลังโหลด' : 'รีเฟรช'}</span>
