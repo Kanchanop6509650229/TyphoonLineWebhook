@@ -623,14 +623,14 @@ def summarize_conversation_chunk(chunk):
         logging.error(f"เกิดข้อผิดพลาดใน summarize_conversation_chunk: {str(e)}")
         return ""
 
-def process_and_optimize_history(user_id, max_tokens=1850000):
+def process_and_optimize_history(user_id, max_tokens=450000):
     """
     ประมวลผลและปรับปรุงประวัติการสนทนาให้เหมาะสมที่สุด
     รวมการสรุปเป็นชั้นๆ และการจัดลำดับความสำคัญ
 
     Args:
         user_id (str): LINE User ID
-        max_tokens (int): จำนวนโทเค็นสูงสุดที่ต้องการใช้ (ค่าเริ่มต้นสำหรับ grok-4-fast-reasoning)
+        max_tokens (int): จำนวนโทเค็นสูงสุดที่ต้องการใช้ (90% ของ TOKEN_THRESHOLD)
 
     Returns:
         list: ประวัติการสนทนาที่ปรับปรุงแล้ว
@@ -841,7 +841,7 @@ def summarize_by_topic(history):
             ],
             model=config.XAI_MODEL,
             temperature=0.2,
-            max_tokens=2000,
+            max_tokens=1500,
         )
 
         return text
@@ -1422,7 +1422,7 @@ def summarize_form_data(form_data):
             ],
             model=config.XAI_MODEL,
             temperature=0.3,
-            max_tokens=3000,
+            max_tokens=2000,
         )
         return clean_ai_response(summary)
         
@@ -1770,7 +1770,7 @@ def prepare_conversation_messages(user_id: str, user_context: Optional[str]) -> 
         used_history_ids: Set[int] = set()
         history_for_summary: List[Tuple] = []
 
-        history_token_limit = 500000 if not messages else 250000
+        history_token_limit = 100000 if not messages else 50000
         try:
             history_for_summary = db.get_user_history(user_id, max_tokens=history_token_limit) or []
         except Exception as e:
