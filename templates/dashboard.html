@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="th">
 <head>
   <meta charset="utf-8" />
@@ -21,6 +21,27 @@
       --accent: #6366f1;
       --accent-soft: rgba(99, 102, 241, 0.16);
       --shadow-lg: 0 38px 80px -40px rgba(15, 23, 42, 0.55);
+      --bg-gradient: linear-gradient(180deg, #eef2ff 0%, #f8fafc 100%);
+      --card-bg: rgba(255, 255, 255, 0.7);
+      --hover-shadow: 0 42px 80px -45px rgba(15, 23, 42, 0.55);
+    }
+
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --gradient-start: #1e1b4b;
+      --gradient-end: #0f172a;
+      --surface: rgba(30, 41, 59, 0.92);
+      --surface-strong: rgba(30, 41, 59, 0.98);
+      --border: rgba(71, 85, 105, 0.35);
+      --border-strong: rgba(71, 85, 105, 0.55);
+      --text-primary: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #818cf8;
+      --accent-soft: rgba(129, 140, 248, 0.2);
+      --shadow-lg: 0 38px 80px -40px rgba(0, 0, 0, 0.75);
+      --bg-gradient: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+      --card-bg: rgba(30, 41, 59, 0.7);
+      --hover-shadow: 0 42px 80px -45px rgba(0, 0, 0, 0.85);
     }
 
     *, *::before, *::after {
@@ -31,9 +52,10 @@
       margin: 0;
       min-height: 100vh;
       font-family: 'Prompt', 'Segoe UI', sans-serif;
-      background: linear-gradient(180deg, #eef2ff 0%, #f8fafc 100%);
+      background: var(--bg-gradient);
       color: var(--text-primary);
       line-height: 1.55;
+      transition: background 0.3s ease, color 0.3s ease;
     }
 
     body.modal-open {
@@ -61,7 +83,7 @@
       cursor: pointer;
     }
 
-    select {
+    select, input {
       font-family: inherit;
     }
 
@@ -127,6 +149,13 @@
       font-size: 0.9rem;
     }
 
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
     .status-chip {
       display: inline-flex;
       align-items: center;
@@ -137,6 +166,8 @@
       backdrop-filter: blur(12px);
       background: rgba(15, 23, 42, 0.2);
       color: inherit;
+      font-size: 0.9rem;
+      transition: all 0.3s ease;
     }
 
     .status-chip.is-ok {
@@ -152,6 +183,49 @@
     .status-chip.is-loading {
       background: rgba(124, 58, 237, 0.22);
       color: #ede9fe;
+    }
+
+    .theme-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #f8fafc;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: all 0.3s ease;
+    }
+
+    .theme-toggle:hover {
+      background: rgba(255, 255, 255, 0.2);
+      transform: translateY(-2px);
+    }
+
+    .auto-refresh-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #f8fafc;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: all 0.3s ease;
+    }
+
+    .auto-refresh-toggle.active {
+      background: rgba(34, 197, 94, 0.2);
+      border-color: rgba(34, 197, 94, 0.4);
+    }
+
+    .auto-refresh-toggle:hover {
+      background: rgba(255, 255, 255, 0.2);
+      transform: translateY(-2px);
     }
 
     .eyebrow {
@@ -183,7 +257,7 @@
 
     .card:hover {
       transform: translateY(-4px);
-      box-shadow: 0 42px 80px -45px rgba(15, 23, 42, 0.55);
+      box-shadow: var(--hover-shadow);
     }
 
     .card-header {
@@ -214,6 +288,13 @@
       font-size: 0.9rem;
     }
 
+    .panel-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+
     .filter-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -233,7 +314,7 @@
       font-weight: 500;
     }
 
-    select {
+    select, input[type="text"], input[type="search"] {
       border-radius: 16px;
       border: 1px solid var(--border-strong);
       padding: 12px 18px;
@@ -243,10 +324,40 @@
       transition: border-color 0.2s ease, box-shadow 0.2s ease;
     }
 
-    select:focus {
+    select:focus, input:focus {
       outline: none;
       border-color: rgba(99, 102, 241, 0.8);
       box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+    }
+
+    .search-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 18px;
+      border-radius: 16px;
+      border: 1px solid var(--border-strong);
+      background: var(--surface-strong);
+      transition: all 0.2s ease;
+    }
+
+    .search-box:focus-within {
+      border-color: rgba(99, 102, 241, 0.8);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+    }
+
+    .search-box input {
+      flex: 1;
+      border: none;
+      padding: 0;
+      background: transparent;
+      color: var(--text-primary);
+      font-size: 1rem;
+    }
+
+    .search-box input:focus {
+      outline: none;
+      box-shadow: none;
     }
 
     .updated-at {
@@ -289,11 +400,43 @@
       color: #fff;
       font-weight: 600;
       transition: transform 0.2s ease, box-shadow 0.2s ease;
+      font-size: 0.95rem;
     }
 
-    .primary-button:hover {
+    .primary-button:hover:not(:disabled) {
       transform: translateY(-2px);
       box-shadow: 0 14px 30px -18px rgba(99, 102, 241, 0.7);
+    }
+
+    .primary-button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .secondary-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px 20px;
+      border-radius: 16px;
+      background: transparent;
+      border: 1px solid var(--border-strong);
+      color: var(--text-primary);
+      font-weight: 600;
+      transition: all 0.2s ease;
+      font-size: 0.95rem;
+    }
+
+    .secondary-button:hover:not(:disabled) {
+      transform: translateY(-2px);
+      background: var(--card-bg);
+      border-color: var(--accent);
+    }
+
+    .secondary-button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
     }
 
     .stat-grid {
@@ -307,10 +450,21 @@
       grid-template-columns: auto 1fr;
       gap: 18px;
       align-items: center;
-      background: rgba(255, 255, 255, 0.7);
+      background: var(--card-bg);
       border: 1px solid rgba(255, 255, 255, 0.4);
       border-radius: 24px;
       padding: 22px;
+      transition: all 0.3s ease;
+    }
+
+    [data-theme="dark"] .stat-card {
+      background: rgba(30, 41, 59, 0.5);
+      border: 1px solid rgba(71, 85, 105, 0.4);
+    }
+
+    .stat-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 18px 40px -28px rgba(99, 102, 241, 0.45);
     }
 
     .stat-icon {
@@ -477,13 +631,23 @@
     }
 
     .metric-card {
-      background: rgba(255, 255, 255, 0.75);
+      background: var(--card-bg);
       border: 1px solid rgba(148, 163, 184, 0.24);
       border-radius: 18px;
       padding: 16px;
       display: flex;
       flex-direction: column;
       gap: 6px;
+      transition: all 0.3s ease;
+    }
+
+    [data-theme="dark"] .metric-card {
+      background: rgba(30, 41, 59, 0.5);
+    }
+
+    .metric-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 24px -16px rgba(99, 102, 241, 0.35);
     }
 
     .metric-label {
@@ -574,6 +738,24 @@
       font-weight: 600;
     }
 
+    .user-table__header span {
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: color 0.2s ease;
+    }
+
+    .user-table__header span:hover {
+      color: var(--accent);
+    }
+
+    .sort-icon {
+      font-size: 0.7rem;
+      opacity: 0.6;
+    }
+
     .user-table__body {
       display: flex;
       flex-direction: column;
@@ -587,10 +769,14 @@
       align-items: center;
       border-radius: 20px;
       padding: 16px 18px;
-      background: rgba(255, 255, 255, 0.85);
+      background: var(--card-bg);
       border: 1px solid rgba(148, 163, 184, 0.16);
       text-align: left;
       transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+
+    [data-theme="dark"] .user-row {
+      background: rgba(30, 41, 59, 0.5);
     }
 
     .user-row:hover {
@@ -688,6 +874,26 @@
       color: #475569;
     }
 
+    [data-theme="dark"] .risk-chip.high {
+      background: rgba(239, 68, 68, 0.2);
+      color: #fca5a5;
+    }
+
+    [data-theme="dark"] .risk-chip.medium {
+      background: rgba(249, 115, 22, 0.2);
+      color: #fdba74;
+    }
+
+    [data-theme="dark"] .risk-chip.general {
+      background: rgba(34, 197, 94, 0.2);
+      color: #86efac;
+    }
+
+    [data-theme="dark"] .risk-chip.contextual {
+      background: rgba(14, 165, 233, 0.2);
+      color: #7dd3fc;
+    }
+
     .empty-state {
       padding: 28px;
       border-radius: 20px;
@@ -697,6 +903,11 @@
       color: var(--text-muted);
       font-size: 0.95rem;
     }
+
+    [data-theme="dark"] .empty-state {
+      background: rgba(15, 23, 42, 0.5);
+    }
+
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -708,6 +919,20 @@
       padding: 72px 16px;
       z-index: 40;
       overflow-y: auto;
+      animation: fadeIn 0.2s ease;
+    }
+
+    [data-theme="dark"] .modal-backdrop {
+      background: rgba(0, 0, 0, 0.7);
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+      }
+      to {
+        opacity: 1;
+      }
     }
 
     .modal-sheet {
@@ -720,6 +945,22 @@
       flex-direction: column;
       max-height: calc(100vh - 140px);
       overflow: hidden;
+      animation: slideUp 0.3s ease;
+    }
+
+    @keyframes slideUp {
+      from {
+        transform: translateY(20px);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    [data-theme="dark"] .modal-sheet {
+      border-color: rgba(71, 85, 105, 0.6);
     }
 
     .modal-header {
@@ -798,7 +1039,11 @@
       padding: 12px 14px;
       border-radius: 18px;
       border: 1px solid rgba(148, 163, 184, 0.22);
-      background: rgba(255, 255, 255, 0.78);
+      background: var(--card-bg);
+    }
+
+    [data-theme="dark"] .risk-row {
+      background: rgba(30, 41, 59, 0.5);
     }
 
     .risk-info {
@@ -826,11 +1071,15 @@
     .timeline-item {
       border-radius: 20px;
       border: 1px solid rgba(148, 163, 184, 0.18);
-      background: rgba(255, 255, 255, 0.88);
+      background: var(--card-bg);
       padding: 16px 18px;
       display: flex;
       flex-direction: column;
       gap: 10px;
+    }
+
+    [data-theme="dark"] .timeline-item {
+      background: rgba(30, 41, 59, 0.5);
     }
 
     .timeline-item.important {
@@ -875,6 +1124,11 @@
       border-width: 2px;
     }
 
+    .spinner--primary {
+      border-color: rgba(99, 102, 241, 0.3);
+      border-top-color: var(--accent);
+    }
+
     .skeleton-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -889,12 +1143,20 @@
       overflow: hidden;
     }
 
+    [data-theme="dark"] .skeleton {
+      background: rgba(30, 41, 59, 0.35);
+    }
+
     .skeleton::after {
       content: '';
       position: absolute;
       inset: 0;
       background: linear-gradient(90deg, rgba(248, 250, 252, 0), rgba(248, 250, 252, 0.65), rgba(248, 250, 252, 0));
       animation: shimmer 1.6s infinite;
+    }
+
+    [data-theme="dark"] .skeleton::after {
+      background: linear-gradient(90deg, rgba(51, 65, 85, 0), rgba(51, 65, 85, 0.65), rgba(51, 65, 85, 0));
     }
 
     .error-card {
@@ -905,6 +1167,12 @@
       color: #b91c1c;
       background: rgba(248, 113, 113, 0.1);
       border: 1px solid rgba(248, 113, 113, 0.28);
+    }
+
+    [data-theme="dark"] .error-card {
+      color: #fca5a5;
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.4);
     }
 
     @keyframes spin {
@@ -976,6 +1244,15 @@
       .user-row span:nth-child(5) {
         display: none;
       }
+
+      .panel-controls {
+        width: 100%;
+      }
+
+      .panel-controls button {
+        flex: 1;
+        min-width: 0;
+      }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -983,6 +1260,28 @@
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
         transition-duration: 0.01ms !important;
+      }
+    }
+
+    @media print {
+      .ghost-button,
+      .primary-button,
+      .secondary-button,
+      .theme-toggle,
+      .auto-refresh-toggle,
+      .hero-actions {
+        display: none !important;
+      }
+
+      .card {
+        break-inside: avoid;
+        box-shadow: none;
+        border: 1px solid #ccc;
+      }
+
+      body {
+        background: white;
+        color: black;
       }
     }
   </style>
@@ -1002,7 +1301,7 @@
   {% raw %}
   <script>
     (() => {
-      const { useState, useEffect, useMemo, useCallback } = React;
+      const { useState, useEffect, useMemo, useCallback, useRef } = React;
       const html = htm.bind(React.createElement);
 
       const numberFormatter = new Intl.NumberFormat('th-TH');
@@ -1022,6 +1321,7 @@
       const lookbackOptions = [7, 14, 30, 60, 90, 120, 180];
       const userLimitOptions = [5, 10, 12, 15, 20, 30];
       const keywordLimitOptions = [5, 10, 15, 20, 30];
+      const autoRefreshIntervals = [30, 60, 120, 300]; // seconds
 
       function formatNumber(value) {
         const numeric = Number(value);
@@ -1071,12 +1371,39 @@
         return date ? fullDateTimeFormatter.format(date) : '-';
       }
 
-      function Spinner({ size = 'md' }) {
-        const className = size === 'sm' ? 'spinner spinner--sm' : 'spinner';
+      function exportToCSV(data, filename) {
+        if (!data || data.length === 0) {
+          alert('ไม่มีข้อมูลสำหรับการส่งออก');
+          return;
+        }
+
+        const headers = Object.keys(data[0]);
+        const csvContent = [
+          headers.join(','),
+          ...data.map(row => headers.map(header => {
+            const value = row[header];
+            const stringValue = value === null || value === undefined ? '' : String(value);
+            return stringValue.includes(',') ? `"${stringValue}"` : stringValue;
+          }).join(','))
+        ].join('\n');
+
+        const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', filename);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+
+      function Spinner({ size = 'md', variant = 'light' }) {
+        const className = `spinner ${size === 'sm' ? 'spinner--sm' : ''} ${variant === 'primary' ? 'spinner--primary' : ''}`;
         return html`<span className=${className} aria-hidden="true"></span>`;
       }
 
-      function FilterPanel({ params, onParamChange, onRefresh, lastUpdatedLabel, loading }) {
+      function FilterPanel({ params, onParamChange, onRefresh, lastUpdatedLabel, loading, onExport, autoRefreshEnabled, onToggleAutoRefresh }) {
         return html`
           <section className="card filter-panel">
             <div className="panel-header">
@@ -1085,10 +1412,16 @@
                 <h2>เลือกข้อมูลสำหรับการวิเคราะห์</h2>
                 <p className="panel-subtitle">ปรับพารามิเตอร์เพื่อดูแนวโน้มพฤติกรรมในมุมมองที่ต้องการ</p>
               </div>
-              <button className="ghost-button" type="button" onClick=${onRefresh} disabled=${loading}>
-                ${loading ? html`<${Spinner} size="sm" />` : html`<span aria-hidden="true">⟳</span>`}
-                <span>${loading ? 'กำลังโหลด' : 'รีเฟรชข้อมูล'}</span>
-              </button>
+              <div className="panel-controls">
+                <button className="secondary-button" type="button" onClick=${onExport} disabled=${loading}>
+                  <span aria-hidden="true">⬇</span>
+                  <span>ส่งออก CSV</span>
+                </button>
+                <button className="ghost-button" type="button" onClick=${onRefresh} disabled=${loading}>
+                  ${loading ? html`<${Spinner} size="sm" />` : html`<span aria-hidden="true">⟳</span>`}
+                  <span>${loading ? 'กำลังโหลด' : 'รีเฟรช'}</span>
+                </button>
+              </div>
             </div>
             <div className="filter-grid">
               <label className="input-group">
@@ -1149,12 +1482,13 @@
           </section>
         `;
       }
+
       function RiskDonut({ segments }) {
-        const canvasRef = React.useRef(null);
-        const chartRef = React.useRef(null);
+        const canvasRef = useRef(null);
+        const chartRef = useRef(null);
         const total = segments.reduce((acc, item) => acc + item.value, 0);
 
-        React.useEffect(() => {
+        useEffect(() => {
           const canvas = canvasRef.current;
           if (!canvas || !window.Chart || segments.length === 0) {
             return undefined;
@@ -1166,6 +1500,9 @@
           if (chartRef.current) {
             chartRef.current.destroy();
           }
+
+          const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+
           chartRef.current = new Chart(ctx, {
             type: 'doughnut',
             data: {
@@ -1186,6 +1523,11 @@
               plugins: {
                 legend: { display: false },
                 tooltip: {
+                  backgroundColor: isDark ? 'rgba(30, 41, 59, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+                  titleColor: isDark ? '#f1f5f9' : '#0f172a',
+                  bodyColor: isDark ? '#cbd5e1' : '#475569',
+                  borderColor: isDark ? 'rgba(71, 85, 105, 0.5)' : 'rgba(148, 163, 184, 0.3)',
+                  borderWidth: 1,
                   callbacks: {
                     label(context) {
                       const share = total ? context.parsed / total : 0;
@@ -1260,10 +1602,10 @@
       }
 
       function TrendLine({ labels, totals, importantShares }) {
-        const canvasRef = React.useRef(null);
-        const chartRef = React.useRef(null);
+        const canvasRef = useRef(null);
+        const chartRef = useRef(null);
 
-        React.useEffect(() => {
+        useEffect(() => {
           const canvas = canvasRef.current;
           if (!canvas || !window.Chart || labels.length === 0) {
             return undefined;
@@ -1275,6 +1617,9 @@
           if (chartRef.current) {
             chartRef.current.destroy();
           }
+
+          const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+
           chartRef.current = new Chart(ctx, {
             type: 'line',
             data: {
@@ -1314,32 +1659,46 @@
                 y: {
                   beginAtZero: true,
                   ticks: {
+                    color: isDark ? '#94a3b8' : '#64748b',
                     callback(value) {
                       return formatNumber(value);
                     }
                   },
-                  grid: { color: 'rgba(148, 163, 184, 0.25)' },
-                  title: { display: true, text: 'จำนวนข้อความ' }
+                  grid: { color: isDark ? 'rgba(71, 85, 105, 0.3)' : 'rgba(148, 163, 184, 0.25)' },
+                  title: { display: true, text: 'จำนวนข้อความ', color: isDark ? '#cbd5e1' : '#475569' }
                 },
                 percentage: {
                   position: 'right',
                   beginAtZero: true,
                   suggestedMax: 100,
                   ticks: {
+                    color: isDark ? '#94a3b8' : '#64748b',
                     callback(value) {
                       return `${value}%`;
                     }
                   },
                   grid: { drawOnChartArea: false },
-                  title: { display: true, text: '% ข้อความสำคัญ' }
+                  title: { display: true, text: '% ข้อความสำคัญ', color: isDark ? '#cbd5e1' : '#475569' }
                 },
                 x: {
+                  ticks: { color: isDark ? '#94a3b8' : '#64748b' },
                   grid: { display: false }
                 }
               },
               plugins: {
-                legend: { display: true, labels: { usePointStyle: true } },
+                legend: {
+                  display: true,
+                  labels: {
+                    usePointStyle: true,
+                    color: isDark ? '#cbd5e1' : '#475569'
+                  }
+                },
                 tooltip: {
+                  backgroundColor: isDark ? 'rgba(30, 41, 59, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+                  titleColor: isDark ? '#f1f5f9' : '#0f172a',
+                  bodyColor: isDark ? '#cbd5e1' : '#475569',
+                  borderColor: isDark ? 'rgba(71, 85, 105, 0.5)' : 'rgba(148, 163, 184, 0.3)',
+                  borderWidth: 1,
                   callbacks: {
                     label(context) {
                       if (context.datasetIndex === 0) {
@@ -1422,11 +1781,12 @@
           </article>
         `;
       }
-      function EngagementBar({ segments }) {
-        const canvasRef = React.useRef(null);
-        const chartRef = React.useRef(null);
 
-        React.useEffect(() => {
+      function EngagementBar({ segments }) {
+        const canvasRef = useRef(null);
+        const chartRef = useRef(null);
+
+        useEffect(() => {
           const canvas = canvasRef.current;
           if (!canvas || !window.Chart || segments.length === 0) {
             return undefined;
@@ -1440,6 +1800,8 @@
           if (chartRef.current) {
             chartRef.current.destroy();
           }
+
+          const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
 
           chartRef.current = new Chart(ctx, {
             type: 'bar',
@@ -1461,20 +1823,27 @@
               scales: {
                 x: {
                   beginAtZero: true,
-                  grid: { color: 'rgba(148, 163, 184, 0.25)', borderDash: [4, 4] },
+                  grid: { color: isDark ? 'rgba(71, 85, 105, 0.3)' : 'rgba(148, 163, 184, 0.25)', borderDash: [4, 4] },
                   ticks: {
+                    color: isDark ? '#94a3b8' : '#64748b',
                     callback(value) {
                       return formatNumber(value);
                     }
                   }
                 },
                 y: {
+                  ticks: { color: isDark ? '#94a3b8' : '#64748b' },
                   grid: { display: false }
                 }
               },
               plugins: {
                 legend: { display: false },
                 tooltip: {
+                  backgroundColor: isDark ? 'rgba(30, 41, 59, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+                  titleColor: isDark ? '#f1f5f9' : '#0f172a',
+                  bodyColor: isDark ? '#cbd5e1' : '#475569',
+                  borderColor: isDark ? 'rgba(71, 85, 105, 0.5)' : 'rgba(148, 163, 184, 0.3)',
+                  borderWidth: 1,
                   callbacks: {
                     label(context) {
                       return `${context.label}: ${formatNumber(context.parsed.x)}`;
@@ -1582,8 +1951,54 @@
         return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
       }
 
-      function UserTable({ users, onInspect }) {
-        const items = Array.isArray(users) ? users : [];
+      function UserTable({ users, onInspect, searchQuery, onSearchChange }) {
+        const [sortField, setSortField] = useState('total_messages');
+        const [sortDirection, setSortDirection] = useState('desc');
+
+        const handleSort = (field) => {
+          if (sortField === field) {
+            setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+          } else {
+            setSortField(field);
+            setSortDirection('desc');
+          }
+        };
+
+        const filteredUsers = useMemo(() => {
+          let items = Array.isArray(users) ? users : [];
+
+          if (searchQuery && searchQuery.trim()) {
+            const query = searchQuery.toLowerCase().trim();
+            items = items.filter(user => {
+              const name = (user.display_name || user.alias || user.nickname || user.user_id || '').toLowerCase();
+              const userId = (user.user_id || '').toLowerCase();
+              return name.includes(query) || userId.includes(query);
+            });
+          }
+
+          items.sort((a, b) => {
+            let aVal = a[sortField];
+            let bVal = b[sortField];
+
+            if (sortField === 'last_interaction') {
+              aVal = new Date(aVal).getTime();
+              bVal = new Date(bVal).getTime();
+            } else {
+              aVal = Number(aVal) || 0;
+              bVal = Number(bVal) || 0;
+            }
+
+            return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
+          });
+
+          return items;
+        }, [users, searchQuery, sortField, sortDirection]);
+
+        const getSortIcon = (field) => {
+          if (sortField !== field) return '↕';
+          return sortDirection === 'asc' ? '↑' : '↓';
+        };
+
         return html`
           <section className="card user-card">
             <header className="card-header">
@@ -1593,19 +2008,38 @@
               </div>
               <p className="card-subtitle">คลิกเพื่อดูรายละเอียดบทสนทนาและเหตุการณ์ความเสี่ยง</p>
             </header>
-            ${items.length === 0
-              ? html`<div className="empty-state">ยังไม่มีข้อมูลผู้ใช้สำหรับการวิเคราะห์</div>`
+            <div className="search-box">
+              <span aria-hidden="true">🔍</span>
+              <input
+                type="search"
+                placeholder="ค้นหาผู้ใช้จากชื่อหรือ ID..."
+                value=${searchQuery}
+                onChange=${(e) => onSearchChange(e.target.value)}
+              />
+            </div>
+            ${filteredUsers.length === 0
+              ? html`<div className="empty-state">${searchQuery ? 'ไม่พบผู้ใช้ที่ตรงกับการค้นหา' : 'ยังไม่มีข้อมูลผู้ใช้สำหรับการวิเคราะห์'}</div>`
               : html`
                 <div className="user-table">
                   <div className="user-table__header">
-                    <span>ผู้ใช้</span>
-                    <span>ข้อความทั้งหมด</span>
-                    <span>ข้อความสำคัญ</span>
-                    <span>สัดส่วนสำคัญ</span>
-                    <span>ล่าสุด</span>
+                    <span onClick=${() => handleSort('user_id')}>
+                      ผู้ใช้ <span className="sort-icon">${getSortIcon('user_id')}</span>
+                    </span>
+                    <span onClick=${() => handleSort('total_messages')}>
+                      ข้อความทั้งหมด <span className="sort-icon">${getSortIcon('total_messages')}</span>
+                    </span>
+                    <span onClick=${() => handleSort('important_messages')}>
+                      ข้อความสำคัญ <span className="sort-icon">${getSortIcon('important_messages')}</span>
+                    </span>
+                    <span onClick=${() => handleSort('important_ratio')}>
+                      สัดส่วนสำคัญ <span className="sort-icon">${getSortIcon('important_ratio')}</span>
+                    </span>
+                    <span onClick=${() => handleSort('last_interaction')}>
+                      ล่าสุด <span className="sort-icon">${getSortIcon('last_interaction')}</span>
+                    </span>
                   </div>
                   <div className="user-table__body">
-                    ${items.map((user) => {
+                    ${filteredUsers.map((user) => {
                       const name = user.display_name || user.alias || user.nickname || user.user_id;
                       const lastInteraction = formatDateTime(user.last_interaction);
                       const importantRatio = formatPercentFromRatio(user.important_ratio || 0);
@@ -1640,7 +2074,7 @@
       }
 
       function UserModal({ userId, detail, loading, error, onClose }) {
-        React.useEffect(() => {
+        useEffect(() => {
           if (userId) {
             document.body.classList.add('modal-open');
           }
@@ -1677,7 +2111,7 @@
                 </button>
               </div>
               ${loading
-                ? html`<div className="modal-loading"><${Spinner} /><p>กำลังดึงข้อมูลบทสนทนา...</p></div>`
+                ? html`<div className="modal-loading"><${Spinner} variant="primary" /><p>กำลังดึงข้อมูลบทสนทนา...</p></div>`
                 : error
                   ? html`<div className="empty-state">${error}</div>`
                   : html`
@@ -1780,6 +2214,37 @@
         const [userDetail, setUserDetail] = useState(null);
         const [userLoading, setUserLoading] = useState(false);
         const [userError, setUserError] = useState(null);
+        const [searchQuery, setSearchQuery] = useState('');
+        const [theme, setTheme] = useState(() => {
+          const saved = localStorage.getItem('dashboard-theme');
+          return saved || 'light';
+        });
+        const [autoRefresh, setAutoRefresh] = useState(false);
+        const autoRefreshTimerRef = useRef(null);
+
+        useEffect(() => {
+          document.documentElement.setAttribute('data-theme', theme);
+          localStorage.setItem('dashboard-theme', theme);
+        }, [theme]);
+
+        useEffect(() => {
+          if (autoRefresh) {
+            autoRefreshTimerRef.current = setInterval(() => {
+              setRefreshIndex(i => i + 1);
+            }, 60000); // Auto-refresh every 60 seconds
+          } else {
+            if (autoRefreshTimerRef.current) {
+              clearInterval(autoRefreshTimerRef.current);
+              autoRefreshTimerRef.current = null;
+            }
+          }
+
+          return () => {
+            if (autoRefreshTimerRef.current) {
+              clearInterval(autoRefreshTimerRef.current);
+            }
+          };
+        }, [autoRefresh]);
 
         useEffect(() => {
           let active = true;
@@ -1871,6 +2336,33 @@
           setSelectedUser(userId);
         }, []);
 
+        const handleExport = useCallback(() => {
+          if (!insights || !insights.users || insights.users.length === 0) {
+            alert('ไม่มีข้อมูลผู้ใช้สำหรับการส่งออก');
+            return;
+          }
+
+          const exportData = insights.users.map(user => ({
+            'User ID': user.user_id,
+            'ชื่อ': user.display_name || user.alias || user.nickname || '-',
+            'ข้อความทั้งหมด': user.total_messages,
+            'ข้อความสำคัญ': user.important_messages,
+            'สัดส่วนสำคัญ (%)': (user.important_ratio * 100).toFixed(2),
+            'ล่าสุด': user.last_interaction
+          }));
+
+          const timestamp = new Date().toISOString().slice(0, 10);
+          exportToCSV(exportData, `dashboard-export-${timestamp}.csv`);
+        }, [insights]);
+
+        const toggleTheme = useCallback(() => {
+          setTheme(current => current === 'light' ? 'dark' : 'light');
+        }, []);
+
+        const toggleAutoRefresh = useCallback(() => {
+          setAutoRefresh(current => !current);
+        }, []);
+
         const generatedAtLabel = useMemo(() => formatDateTime(insights?.generated_at), [insights?.generated_at]);
         const overview = insights?.overview || { total_conversations: 0, unique_users: 0, important_messages: 0, active_follow_ups: 0 };
         const riskSummary = insights?.risk_summary || { high: 0, medium: 0, general: 0, unknown: 0 };
@@ -1895,6 +2387,16 @@
                     <span>${loading ? 'กำลังอัปเดตข้อมูล...' : (error ? 'มีข้อผิดพลาดในการอัปเดต' : 'ข้อมูลพร้อมใช้งาน')}</span>
                   </span>
                   <p>อัปเดตล่าสุด: ${generatedAtLabel || '—'}</p>
+                  <div className="hero-actions">
+                    <button className="theme-toggle" onClick=${toggleTheme} aria-label="สลับธีม">
+                      <span aria-hidden="true">${theme === 'light' ? '🌙' : '☀️'}</span>
+                      <span>${theme === 'light' ? 'โหมดมืด' : 'โหมดสว่าง'}</span>
+                    </button>
+                    <button className=${`auto-refresh-toggle ${autoRefresh ? 'active' : ''}`} onClick=${toggleAutoRefresh} aria-label="สลับการอัปเดตอัตโนมัติ">
+                      <span aria-hidden="true">${autoRefresh ? '⏸' : '▶'}</span>
+                      <span>${autoRefresh ? 'หยุดอัปเดตอัตโนมัติ' : 'อัปเดตอัตโนมัติ'}</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </header>
@@ -1905,6 +2407,9 @@
                 onRefresh=${handleRefresh}
                 lastUpdatedLabel=${generatedAtLabel}
                 loading=${loading}
+                onExport=${handleExport}
+                autoRefreshEnabled=${autoRefresh}
+                onToggleAutoRefresh=${toggleAutoRefresh}
               />
               ${error && !insights
                 ? html`<div className="card error-card">
@@ -1923,7 +2428,12 @@
                       <${EngagementPanel} engagement=${infographic.engagement || {}} quality=${infographic.quality || {}} />
                     </section>
                     <${KeywordsPanel} keywords=${keywords} />
-                    <${UserTable} users=${users} onInspect=${handleInspectUser} />
+                    <${UserTable}
+                      users=${users}
+                      onInspect=${handleInspectUser}
+                      searchQuery=${searchQuery}
+                      onSearchChange=${setSearchQuery}
+                    />
                   `
                   : null}
             </main>
@@ -1948,5 +2458,3 @@
   {% endraw %}
 </body>
 </html>
-
-
