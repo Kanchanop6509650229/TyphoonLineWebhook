@@ -27,7 +27,16 @@ from apscheduler.schedulers.base import SchedulerNotRunningError
 
 # นำเข้าโมดูลภายในโปรเจค
 from .middleware.rate_limiter import init_limiter
-from .config import load_config, SYSTEM_MESSAGES, GENERATION_CONFIG, SUMMARY_GENERATION_CONFIG, TOKEN_THRESHOLD
+from .config import (
+    load_config,
+    SYSTEM_MESSAGES,
+    GENERATION_CONFIG,
+    SUMMARY_GENERATION_CONFIG,
+    TOKEN_THRESHOLD,
+    MAX_CONTEXT_WINDOW,
+    CRISIS_CONFIG,
+    INFO_CONFIG
+)
 from .utils import safe_db_operation, safe_api_call, clean_ai_response, check_hospital_inquiry, get_hospital_information_message, handle_grok_api_error
 from .llm import grok_client
 from .chat_history_db import ChatHistoryDB
@@ -605,9 +614,23 @@ def summarize_conversation_chunk(chunk):
         return ""
 
     try:
-        summary_prompt = "นี่คือส่วนของประวัติการสนทนา โปรดสรุปประเด็นสำคัญในส่วนนี้โดยย่อ:\n"
+        # สร้างข้อความสนทนา
+        conversation_text = ""
         for _, msg, resp in chunk:
-            summary_prompt += f"\nผู้ใช้: {msg}\nบอท: {resp}\n"
+            conversation_text += f"ผู้ใช้: {msg}\nบอท: {resp}\n\n"
+
+        summary_prompt = f"""
+โปรดสรุปประวัติการสนทนาต่อไปนี้โดยเน้นประเด็นสำคัญตามหลัก Motivational Interviewing:
+
+{conversation_text}
+
+กรุณาสรุปโดยครอบคลุม:
+1. **ปัญหาหลัก**: สารเสพติดที่ใช้ และปัญหาที่เกี่ยวข้อง
+2. **ระยะของการเปลี่ยนแปลง**: Precontemplation / Contemplation / Preparation / Action / Maintenance
+3. **Change Talk**: ความปรารถนา ความสามารถ เหตุผล ความจำเป็น ความมุ่งมั่น การลงมือ (DARN-CAT)
+4. **อุปสรรคหลัก**: สิ่งที่ขัดขวางการเปลี่ยนแปลง
+5. **ความคืบหน้า**: ความสำเร็จหรือการกลับไปเสพซ้ำ (ถ้ามี)
+"""
 
         text = grok_client.send_chat(
             messages=[
@@ -777,9 +800,24 @@ def summarize_conversation_history(history):
                 return combined_summary
 
         # หากมีขนาดเล็ก ใช้วิธีสรุปแบบปกติ
-        summary_prompt = "นี่คือประวัติการสนทนา โปรดสรุปประเด็นสำคัญในประวัติการสนทนานี้:\n"
+        conversation_text = ""
         for _, msg, resp in history:
-            summary_prompt += f"\nผู้ใช้: {msg}\nบอท: {resp}\n"
+            conversation_text += f"ผู้ใช้: {msg}\nบอท: {resp}\n\n"
+
+        summary_prompt = f"""
+โปรดสรุปประวัติการสนทนาต่อไปนี้โดยเน้นประเด็นสำคัญตามหลัก Motivational Interviewing:
+
+{conversation_text}
+
+กรุณาสรุปโดยครอบคลุม:
+1. **ปัญหาหลัก**: สารเสพติดที่ใช้ และปัญหาที่เกี่ยวข้อง
+2. **ระยะของการเปลี่ยนแปลง**: Precontemplation / Contemplation / Preparation / Action / Maintenance
+3. **Change Talk**: ความปรารถนา ความสามารถ เหตุผล ความจำเป็น ความมุ่งมั่น การลงมือ (DARN-CAT)
+4. **อุปสรรคหลัก**: สิ่งที่ขัดขวางการเปลี่ยนแปลง
+5. **ความคืบหน้า**: ความสำเร็จหรือการกลับไปเสพซ้ำ (ถ้ามี)
+
+ให้สรุปแบบครอบคลุมประเด็นสำคัญทั้งหมด:
+"""
 
         text = grok_client.send_chat(
             messages=[
@@ -1366,13 +1404,15 @@ def summarize_form_data(form_data):
    - ผลกระทบที่เกิดขึ้นต่อชีวิต (สุขภาพ, ความสัมพันธ์, การทำงาน/เรียน)
    - ปัญหาที่เกิดจากการใช้สารเสพติด
 
-3. **ขั้นตอนของการเปลี่ยนแปลง (Stages of Change)**:
-   - Precontemplation: ยังไม่คิดจะเปลี่ยนแปลง
-   - Contemplation: เริ่มคิด มีความลังเลสองใจ (ambivalence)
-   - Preparation: พร้อมที่จะเปลี่ยนแปลง มีแผน
-   - Action: กำลังดำเนินการเปลี่ยนแปลง
-   - Maintenance: รักษาพฤติกรรมใหม่
-   (ระบุว่าผู้ใช้อยู่ในขั้นตอนใดตามข้อมูลที่มี)
+3. **ขั้นตอนของการเปลี่ยนแปลง (Stages of Change)** - **สำคัญมาก**:
+   จากข้อมูลทั้งหมด กรุณาระบุอย่างชัดเจนว่าผู้ใช้อยู่ในขั้นตอนใด:
+   - **Precontemplation**: ปฏิเสธปัญหา ไม่เห็นความจำเป็นต้องเปลี่ยน ยังไม่คิดจะเปลี่ยนแปลง
+   - **Contemplation**: เห็นปัญหาบ้างแล้ว มีความลังเลสองใจ (ambivalence) อยากจะเปลี่ยนแต่ยังไม่แน่ใจ
+   - **Preparation**: ตัดสินใจเปลี่ยนแล้ว มีแผนการเปลี่ยน พร้อมที่จะเริ่ม
+   - **Action**: กำลังดำเนินการเปลี่ยนแปลงอย่างจริงจัง (เริ่มเลิกหรือลดแล้ว)
+   - **Maintenance**: เลิกได้แล้วเกิน 6 เดือน กำลังรักษาพฤติกรรมใหม่
+
+   **ระบุว่าผู้ใช้น่าจะอยู่ในขั้นตอนใด พร้อมเหตุผล** (เช่น "Contemplation - เพราะแสดงความลังเลระหว่างอยากเลิกและกังวลว่าจะทำไม่ได้")
 
 4. **แรงจูงใจภายใน (Intrinsic Motivation)**:
    - เป้าหมายส่วนตัวในการเลิก
