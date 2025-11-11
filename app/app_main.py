@@ -904,27 +904,63 @@ def register_user_with_code(user_id, code):
         # ตรวจสอบว่ารหัสมีอยู่และยังไม่หมดอายุ
         query = 'SELECT code, form_data FROM registration_codes WHERE code = %s AND status = %s'
         result = db_manager.execute_query(query, (code, 'pending'), dictionary=True)
-        
+
         if not result:
             return False, "รหัสยืนยันไม่ถูกต้องหรือหมดอายุแล้ว"
-        
+
         # ดึงข้อมูล form และสรุป
         form_data_json = result[0].get('form_data', '{}')
         form_data = json.loads(form_data_json) if form_data_json else {}
-        
+
+        # ตรวจสอบว่า AI summary พร้อมหรือยัง
+        ai_summary = form_data.get('ai_summary', '')
+        processed_at_str = form_data.get('processed_at')
+
+        # ถ้ายังไม่มี AI summary และยังไม่ผ่าน timeout
+        if not ai_summary and processed_at_str:
+            try:
+                processed_at = datetime.fromisoformat(processed_at_str)
+                time_elapsed = (datetime.now() - processed_at).total_seconds()
+
+                # ถ้ายังไม่ถึง 3 นาที ให้บอกผู้ใช้รอ
+                if time_elapsed < 180:  # 3 minutes
+                    minutes_left = int((180 - time_elapsed) / 60) + 1
+                    return False, (
+                        "⏳ ระบบกำลังประมวลผลข้อมูลของคุณเพื่อสร้างบริบทที่เหมาะสม\n\n"
+                        f"กรุณารอสักครู่ประมาณ {minutes_left} นาที แล้วลองใช้คำสั่ง /verify อีกครั้ง\n\n"
+                        "การรอจะช่วยให้น้องใจดีเข้าใจบริบทและสถานการณ์ของคุณได้ดีขึ้น "
+                        "และสามารถให้คำปรึกษาที่เหมาะสมกับคุณมากที่สุดครับ 💚"
+                    )
+
+                # ถ้าเกิน 3 นาทีแล้ว ให้ลงทะเบียนได้แต่เตือนว่าไม่มี AI summary
+                logging.warning(f"AI summary timeout สำหรับรหัส {code} (ใช้เวลา {time_elapsed:.1f} วินาที)")
+
+            except (ValueError, TypeError) as e:
+                logging.warning(f"ไม่สามารถแปลงวันที่ processed_at: {str(e)}")
+
         # อัพเดทรหัสให้เชื่อมกับผู้ใช้และสถานะเป็น verified
         update_query = 'UPDATE registration_codes SET user_id = %s, status = %s, verified_at = %s WHERE code = %s'
         db_manager.execute_and_commit(update_query, (user_id, 'verified', datetime.now(), code))
-        
+
         # บันทึกบริบทเริ่มต้นของผู้ใช้
-        if form_data and 'ai_summary' in form_data:
-            save_user_initial_context(user_id, form_data['ai_summary'])
-            
+        if form_data and ai_summary:
+            save_user_initial_context(user_id, ai_summary)
+            logging.info(f"บันทึกบริบทสำหรับผู้ใช้ {user_id} สำเร็จ (AI summary พร้อม)")
+        else:
+            logging.warning(f"ลงทะเบียนผู้ใช้ {user_id} โดยไม่มี AI summary")
+
         # ส่งข้อความต้อนรับพร้อมบริบท
         welcome_message = create_personalized_welcome_message(form_data)
-        
+
+        # ถ้าไม่มี AI summary ให้เพิ่มข้อความแจ้งเตือน
+        if not ai_summary:
+            welcome_message += (
+                "\n\n⚠️ หมายเหตุ: ระบบยังไม่สามารถประมวลผลข้อมูลของคุณเสร็จสมบูรณ์ "
+                "แต่คุณสามารถใช้บริการได้ตามปกติ น้องใจดีพร้อมช่วยเหลือคุณครับ 💚"
+            )
+
         return True, welcome_message
-        
+
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการลงทะเบียน: {str(e)}")
         return False, "เกิดข้อผิดพลาดในการลงทะเบียน กรุณาลองอีกครั้ง"
@@ -2474,62 +2510,112 @@ def callback():
 
     return 'OK'
 
+def process_ai_summary_async(code, full_form_data):
+    """
+    ประมวลผล AI summary ในพื้นหลัง (background thread)
+
+    Args:
+        code (str): รหัสยืนยัน
+        full_form_data (dict): ข้อมูล form ที่ต้องการสรุป
+    """
+    try:
+        logging.info(f"เริ่มสรุปข้อมูล form ในพื้นหลังสำหรับรหัส: {code}")
+
+        # สรุปข้อมูลด้วย AI
+        ai_summary = summarize_form_data(full_form_data)
+
+        # ดึงข้อมูลเดิมออกมาก่อน
+        select_query = 'SELECT form_data FROM registration_codes WHERE code = %s'
+        result = db_manager.execute_query(select_query, (code,))
+
+        if result and result[0]:
+            existing_data = json.loads(result[0][0])
+            # อัปเดต AI summary
+            existing_data['ai_summary'] = ai_summary
+            existing_data['ai_processed_at'] = datetime.now().isoformat()
+
+            # บันทึกกลับลงฐานข้อมูล
+            update_query = '''
+                UPDATE registration_codes
+                SET form_data = %s
+                WHERE code = %s
+            '''
+            db_manager.execute_and_commit(
+                update_query,
+                (json.dumps(existing_data), code)
+            )
+
+            logging.info(f"อัปเดต AI summary สำเร็จสำหรับรหัส: {code}")
+        else:
+            logging.warning(f"ไม่พบรหัส {code} ในฐานข้อมูล ไม่สามารถอัปเดต AI summary ได้")
+
+    except Exception as e:
+        logging.error(f"เกิดข้อผิดพลาดในการสรุปข้อมูล form แบบ async สำหรับรหัส {code}: {str(e)}")
+
+
 @app.route("/api/add-verification-code", methods=['POST'])
 @limiter.exempt
 def add_verification_code():
     """API endpoint รับรหัสยืนยันและข้อมูล form จาก Google Apps Script"""
-    
+
     # ตรวจสอบการรับรอง API key
     api_key = request.json.get('api_key', '')
     if api_key != os.getenv('FORM_WEBHOOK_KEY', 'your_secret_key_here'):
         return jsonify({"success": False, "error": "Unauthorized"}), 401
-    
+
     # รับข้อมูลจาก request
     code = request.json.get('code', '')
     full_form_data = request.json.get('full_form_data', {})
-    
+
     if not code or not code.isdigit() or len(code) != 6:
         return jsonify({"success": False, "error": "Invalid verification code"}), 400
-    
+
     try:
         # ตรวจสอบว่ารหัสมีอยู่แล้วหรือไม่
         check_query = 'SELECT code FROM registration_codes WHERE code = %s'
         result = db_manager.execute_query(check_query, (code,))
-        
+
         if result and result[0]:
             return jsonify({"success": False, "error": "Code already exists"}), 409
-        
-        # สรุปข้อมูลด้วย AI
-        ai_summary = ""
-        if full_form_data:
-            logging.info(f"กำลังสรุปข้อมูล form สำหรับรหัส: {code}")
-            ai_summary = summarize_form_data(full_form_data)
-        
-        # เตรียมข้อมูลสำหรับบันทึก
+
+        # เตรียมข้อมูลสำหรับบันทึก (โดยยังไม่มี AI summary)
         form_data_json = {
             "full_data": full_form_data,
-            "ai_summary": ai_summary,
-            "processed_at": datetime.now().isoformat()
+            "ai_summary": "",  # จะถูกอัปเดทภายหลังโดย background thread
+            "processed_at": datetime.now().isoformat(),
+            "ai_processed_at": None
         }
-        
-        # บันทึกรหัสใหม่พร้อมข้อมูล form และสรุป
+
+        # บันทึกรหัสใหม่พร้อมข้อมูล form (โดยยังไม่มี AI summary)
         insert_query = '''
-            INSERT INTO registration_codes 
-            (code, created_at, status, form_data) 
+            INSERT INTO registration_codes
+            (code, created_at, status, form_data)
             VALUES (%s, %s, %s, %s)
         '''
         db_manager.execute_and_commit(
-            insert_query, 
+            insert_query,
             (code, datetime.now(), 'pending', json.dumps(form_data_json))
         )
-        
+
         logging.info(f"บันทึกรหัสยืนยันและข้อมูล form สำเร็จ: {code}")
+
+        # เริ่ม background thread เพื่อสรุปข้อมูลด้วย AI
+        if full_form_data:
+            summary_thread = threading.Thread(
+                target=process_ai_summary_async,
+                args=(code, full_form_data),
+                daemon=True
+            )
+            summary_thread.start()
+            logging.info(f"เริ่ม background thread เพื่อสรุปข้อมูล form สำหรับรหัส: {code}")
+
+        # ตอบกลับทันทีโดยไม่ต้องรอ AI summary
         return jsonify({
-            "success": True, 
+            "success": True,
             "message": "Verification code and form data saved successfully",
-            "summary_created": bool(ai_summary)
+            "summary_processing": bool(full_form_data)
         }), 201
-        
+
     except Exception as e:
         logging.error(f"เกิดข้อผิดพลาดในการบันทึกรหัสยืนยัน: {str(e)}")
         return jsonify({"success": False, "error": str(e)}), 500
