@@ -926,7 +926,7 @@ def register_user_with_code(user_id, code):
 
                 # ถ้ายังไม่ถึง 5 นาที ให้บอกผู้ใช้รอ
                 if time_elapsed < 300:  # 5 minutes
-                    minutes_left = int((180 - time_elapsed) / 60) + 1
+                    minutes_left = int((300 - time_elapsed) / 60) + 1
                     return False, (
                         "⏳ ระบบกำลังประมวลผลข้อมูลของคุณเพื่อสร้างบริบทที่เหมาะสม\n\n"
                         f"กรุณารอสักครู่ประมาณ {minutes_left} นาที แล้วลองใช้คำสั่ง /verify อีกครั้ง\n\n"
